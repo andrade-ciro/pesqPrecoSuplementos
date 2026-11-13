@@ -1,0 +1,10 @@
+[{"productId":"10","productName":"Whey Protein Isolado IsoWhey 900g","brand":"Max Titanium","linkText":"iso-whey-900g-max-titanium",
+  "link":"https://loja.vtexcommercestable.com.br/iso-whey-900g-max-titanium/p",
+  "items":[
+    {"itemId":"64","name":"Baunilha","nameComplete":"Whey Protein Isolado IsoWhey 900g Baunilha",
+     "sellers":[{"sellerId":"1","sellerDefault":true,"commertialOffer":{"Price":326.18,"ListPrice":359.9,"PriceWithoutDiscount":326.18,"AvailableQuantity":100,"IsAvailable":true}}]},
+    {"itemId":"62","name":"Chocolate","nameComplete":"Whey Protein Isolado IsoWhey 900g Chocolate",
+     "sellers":[{"sellerId":"1","sellerDefault":true,"commertialOffer":{"Price":319.9,"ListPrice":359.9,"PriceWithoutDiscount":319.9,"AvailableQuantity":5,"IsAvailable":true}}]},
+    {"itemId":"63","name":"Morango","nameComplete":"Whey Protein Isolado IsoWhey 900g Morango",
+     "sellers":[{"sellerId":"1","sellerDefault":true,"commertialOffer":{"Price":0,"ListPrice":0,"PriceWithoutDiscount":0,"AvailableQuantity":0,"IsAvailable":false}}]}
+  ]}]

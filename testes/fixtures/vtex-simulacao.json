@@ -1,0 +1,5 @@
+{"items":[{"id":"62","price":31990,"sellingPrice":31990}],"postalCode":"01001000",
+ "logisticsInfo":[{"itemIndex":0,"slas":[
+   {"id":"Normal","price":1990,"deliveryChannel":"delivery"},
+   {"id":"Expressa","price":3490,"deliveryChannel":"delivery"},
+   {"id":"Retirada na loja","price":0,"deliveryChannel":"pickup-in-point"}]}]}
