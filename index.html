@@ -85,6 +85,16 @@ b.clamp{display:block}
 .leg i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
 .tip{position:absolute;top:0;pointer-events:none;background:#000;color:var(--tx);border:1px solid var(--bd);border-radius:8px;padding:6px 8px;font-size:12px;white-space:nowrap;opacity:0;transform:translateX(-50%);transition:opacity .1s}
 .tip.on{opacity:.95}
+.tip.ml{white-space:pre;transform:none}
+.grupo{padding:0 14px}
+.grupo>.li{border-bottom:0}
+.grupo .seta{flex:none;color:var(--tx2);width:20px;text-align:center}
+.grupo .seta::before{content:'▸'}
+.grupo .li[aria-expanded="true"] .seta::before{content:'▾'}
+.grupo-corpo{border-top:1px solid #262a35}
+.legc{display:flex;align-items:center;gap:8px;padding:6px 0;color:inherit;text-decoration:none;font-size:13px;min-height:40px}
+.legc i{flex:none;width:12px;height:3px;border-radius:2px}
+.lider{box-shadow:inset 3px 0 0 var(--ac)}
 #toast{position:fixed;left:50%;bottom:120px;transform:translateX(-50%) translateY(20px);background:#000;color:#fff;padding:10px 16px;border-radius:12px;opacity:0;transition:.25s;z-index:60;max-width:90vw;font-size:14px;pointer-events:none}
 #toast.on{opacity:.92;transform:translateX(-50%)}
 .testes li.f{color:var(--err)}.testes li.p{color:var(--ok)}
@@ -95,13 +105,15 @@ b.clamp{display:block}
 <div id="toast"></div>
 <script>
 'use strict';
-const VERSAO = '1.0.0';
+const VERSAO = '1.1.0';
 
 // <núcleo> — funções puras, sem DOM; testadas por ?test e por testes/rodar.js
 const DEF = { janela_dias: 7, intervalo_coleta_h: 6, historico_dias: 180, falhas_para_pausar: 5 };
 const TIPOS = { concentrado: 'Concentrado', isolado: 'Isolado', hidrolisado: 'Hidrolisado', blend: 'Blend' };
+const COM_LACTOSE = ['concentrado', 'blend']; // isolado e hidrolisado têm pouca lactose
+const VALIDADE_DIAS = 7; // por quantos dias a última cotação de uma loja vale no histórico diário
 const COLS = {
-  Produtos: ['marca', 'nome', 'tipo', 'sabor', 'peso_g', 'dose_g', 'proteina_dose_g', 'preco_alvo', 'ativo', 'obs'],
+  Produtos: ['marca', 'nome', 'tipo', 'sabor', 'peso_g', 'dose_g', 'proteina_dose_g', 'preco_alvo', 'ativo', 'obs', 'proteina_laudo_g', 'laudo_fonte'],
   Lojas: ['nome', 'tipo', 'url', 'plataforma', 'frete_fixo', 'frete_gratis_acima', 'desconto_pix_pct', 'cupom', 'cupom_pct', 'ativo'],
   Monitores: ['produto_id', 'loja_id', 'url', 'sku', 'sku_nome', 'adaptador', 'ativo'],
   Cotacoes: ['produto_id', 'loja_id', 'monitor_id', 'origem', 'data', 'preco', 'preco_min_dia', 'preco_lista', 'frete', 'desconto',
@@ -179,12 +191,18 @@ function custoEfetivo(c, loja) {
   return { preco, desconto: arred(desconto), frete: arred(frete), custo: arred(preco - desconto + frete) };
 }
 
-/** % de proteína, R$/kg de proteína e R$ por dose de um produto a um custo. */
+/**
+ * % de proteína, R$/kg de proteína e R$ por dose de um produto a um custo.
+ * Proteína real: a medida em laudo (proteina_laudo_g), se houver; senão a do rótulo (verificado = false).
+ */
 function metricas(prod, custo) {
-  const peso = num(prod.peso_g), dose = num(prod.dose_g), prot = num(prod.proteina_dose_g);
+  const peso = num(prod.peso_g), dose = num(prod.dose_g), rotulo = num(prod.proteina_dose_g), laudo = num(prod.proteina_laudo_g);
+  const prot = laudo != null ? laudo : rotulo;
   const pct = dose > 0 && prot != null ? prot / dose : null;
   return {
     pct,
+    verificado: laudo != null && dose > 0,
+    pctRotulo: dose > 0 && rotulo != null ? rotulo / dose : null,
     porKg: custo != null && peso > 0 && pct > 0 ? arred(custo / (peso / 1000 * pct)) : null,
     porDose: custo != null && peso > 0 && dose > 0 ? arred(custo / (peso / dose)) : null,
   };
@@ -208,9 +226,11 @@ const maisRecente = (a, b) => !a || Date.parse(b.data) > Date.parse(a.data) ||
 /**
  * Ranking de custo-benefício (RP-16..RP-18). Para cada produto ativo, a cotação mais recente de cada loja
  * dentro da janela; o produto entra com a melhor loja. Sem dados nutricionais vai para o fim.
- * f: { tipo, marca, loja, janela_dias (0 = tudo), soDisponiveis }
+ * f: { tipo, marca, loja, janela_dias (0 = tudo), soDisponiveis, semLactose }
  * → [{ produto, ofertas: [{ cot, loja, ce, porKg, porDose, pct }], melhor, abaixoAlvo }]
  */
+const passaFiltro = (p, f) => bool(p.ativo, true) && (!f.tipo || p.tipo === f.tipo) && (!f.marca || p.marca === f.marca) &&
+  !(f.semLactose && COM_LACTOSE.includes(p.tipo));
 function montarRanking(dados, f, agoraMs) {
   f = f || {};
   const lojas = indexar(dados.lojas, 'loja_id');
@@ -227,7 +247,7 @@ function montarRanking(dados, f, agoraMs) {
   const soDisp = f.soDisponiveis !== false;
   const out = [];
   for (const p of dados.produtos || []) {
-    if (!bool(p.ativo, true) || (f.tipo && p.tipo !== f.tipo) || (f.marca && p.marca !== f.marca)) continue;
+    if (!passaFiltro(p, f)) continue;
     const ofertas = (porProd[p.produto_id] || []).map(cot => {
       const loja = lojas[cot.loja_id] || {};
       const ce = custoEfetivo(cot, loja);
@@ -274,6 +294,87 @@ function historicoProduto(dados, produtoId, janelaDias, agoraMs) {
     if (u.t >= limite && (!atual || u.custo < atual.custo)) atual = u;
   }
   return { series, menor, mediana90: med, atual, avaliacao: avaliarPreco(atual && atual.custo, med) };
+}
+
+/**
+ * Melhor custo efetivo de um produto em cada um dos últimos `dias` dias (o último é hoje).
+ * Em cada dia vale, por loja, a cotação mais recente até aquele dia e de no máximo VALIDADE_DIAS dias;
+ * se ela diz esgotado, a loja não conta. f.loja restringe a uma loja.
+ * → [{ k (dias atrás), t, custo | null, loja_id }] do mais antigo para hoje
+ */
+function melhorPorDia(dados, produtoId, dias, agoraMs, f) {
+  f = f || {};
+  const lojas = indexar(dados.lojas, 'loja_id');
+  const porLoja = {}; // loja → { k → cotação mais recente do dia }
+  for (const c of dados.cotacoes || []) {
+    if (c.produto_id !== produtoId || (f.loja && c.loja_id !== f.loja)) continue;
+    const k = diasAtras(c.data, agoraMs);
+    if (k == null || k < 0 || k >= dias + VALIDADE_DIAS) continue;
+    const m = porLoja[c.loja_id] = porLoja[c.loja_id] || {};
+    if (maisRecente(m[k], c)) m[k] = c;
+  }
+  const out = [];
+  for (let k = dias - 1; k >= 0; k--) {
+    let melhor = null;
+    for (const [lojaId, m] of Object.entries(porLoja)) {
+      let c = null;
+      for (let j = k; j < k + VALIDADE_DIAS && !c; j++) c = m[j] || null;
+      const ce = c && custoEfetivo(c, lojas[lojaId]);
+      if (ce && (!melhor || ce.custo < melhor.custo)) melhor = { custo: ce.custo, loja_id: lojaId };
+    }
+    out.push({ k, t: agoraMs - k * DIA, custo: melhor ? melhor.custo : null, loja_id: melhor ? melhor.loja_id : null });
+  }
+  return out;
+}
+
+/** Percentil p (0–1) por interpolação linear. */
+function percentil(v, p) {
+  const a = v.filter(x => x != null).sort((x, y) => x - y);
+  if (!a.length) return null;
+  const i = (a.length - 1) * p, lo = Math.floor(i);
+  return arred(a[lo] + (a[Math.min(lo + 1, a.length - 1)] - a[lo]) * (i - lo));
+}
+
+/**
+ * Comprar agora ou esperar? Compara o melhor custo de hoje com os dias do histórico (saída de melhorPorDia).
+ * posicao: fração dos dias em que o preço esteve mais caro que hoje (empates contam meio) — 0,8 = mais barato que em 80 % dos dias.
+ * estado: 'comprar' (entre os 25 % dias mais baratos), 'esperar' (entre os 35 % mais caros e
+ * mais de 3 % acima da mediana), 'normal', 'sem-preco' (nada disponível hoje).
+ * historicoCurto: menos de 14 dias com preço; a recomendação vale pouco.
+ * bom: preço que já é "bom" para este produto (percentil 25); ultimaVezBom: há quantos dias ele esteve nesse nível.
+ */
+function decisaoCompra(serie) {
+  const hoje = serie.length ? serie[serie.length - 1] : null;
+  const vals = serie.map(p => p.custo).filter(x => x != null);
+  const r = { estado: 'sem-preco', atual: hoje && hoje.custo, dias: vals.length, historicoCurto: vals.length < 14,
+    minimo: vals.length ? Math.min(...vals) : null, mediana: mediana(vals), bom: percentil(vals, 0.25), posicao: null, ultimaVezBom: null };
+  if (!hoje || hoje.custo == null) return r;
+  const atual = hoje.custo;
+  r.posicao = vals.reduce((a, v) => a + (v > atual ? 1 : v === atual ? 0.5 : 0), 0) / vals.length;
+  const antes = serie.slice(0, -1).reverse().find(p => p.custo != null && p.custo <= r.bom);
+  r.ultimaVezBom = antes ? antes.k : null;
+  r.estado = r.posicao >= 0.75 ? 'comprar'
+    : r.posicao <= 0.35 && atual > r.mediana * 1.03 ? 'esperar' : 'normal';
+  return r;
+}
+
+/**
+ * Séries do gráfico comparativo: R$/kg de proteína real no melhor preço de cada dia, por produto que passa no filtro.
+ * → [{ produto, pontos: [{ k, t, custo, porKg, loja_id }], atual (R$/kg hoje ou null), minimo: { porKg, k } | null }]
+ */
+function serieComparativa(dados, f, dias, agoraMs) {
+  f = f || {};
+  const out = [];
+  for (const p of dados.produtos || []) {
+    if (!passaFiltro(p, f)) continue;
+    const pontos = melhorPorDia(dados, p.produto_id, dias, agoraMs, f)
+      .map(x => Object.assign(x, { porKg: metricas(p, x.custo).porKg }));
+    if (!pontos.some(x => x.porKg != null)) continue;
+    let minimo = null;
+    for (const x of pontos) if (x.porKg != null && (!minimo || x.porKg < minimo.porKg)) minimo = { porKg: x.porKg, k: x.k };
+    out.push({ produto: p, pontos, atual: pontos[pontos.length - 1].porKg, minimo });
+  }
+  return out;
 }
 
 /** Insere uma operação na fila, juntando upserts pendentes do mesmo registro. Não toca operações em envio. */
@@ -334,9 +435,9 @@ const S = {
   cfg: LS.get('cfg', { url: '', token: '' }),
   cache: Object.assign({}, CACHE_VAZIO, LS.get('cache', {})),
   fila: LS.get('fila', []),
-  filtros: LS.get('filtros', { tipo: '', marca: '', loja: '', janela_dias: null, soDisponiveis: true }),
+  filtros: Object.assign({ tipo: '', marca: '', loja: '', janela_dias: null, soDisponiveis: true, dias_graf: 30 }, LS.get('filtros', {})),
   sync: { ocupado: false, erro: null, espera: 0, timer: null, emEnvio: new Set(), ultimo: LS.get('ultimoSync', 0) },
-  ui: { modal: null, verArquivados: false, nm: null, coletando: false, graf: [] },
+  ui: { modal: null, verArquivados: false, nm: null, coletando: false, grafs: {}, marcasAbertas: new Set() },
 };
 const salvar = {
   cfg: () => LS.set('cfg', S.cfg),
@@ -346,6 +447,9 @@ const salvar = {
 };
 const cfgVal = k => { const v = num(S.cache.config && S.cache.config[k]); return v == null ? DEF[k] : v; };
 const janela = () => S.filtros.janela_dias == null ? cfgVal('janela_dias') : S.filtros.janela_dias;
+const semLactose = () => bool(S.cache.config && S.cache.config.evitar_lactose, false);
+/** Filtros do ranking + preferência de lactose (Config). */
+const filtroAtual = () => Object.assign({}, S.filtros, { janela_dias: janela(), semLactose: semLactose() });
 
 // ---------------------------------------------------------------- dados do cache
 const prodPorId = id => S.cache.produtos.find(p => p.produto_id === id);
@@ -358,7 +462,7 @@ const prodAtivos = () => S.cache.produtos.filter(p => bool(p.ativo, true)).sort(
 const lojasOrd = () => S.cache.lojas.slice().sort((a, b) => String(a.nome).localeCompare(String(b.nome), 'pt-BR'));
 function descProd(p) {
   const m = metricas(p, null);
-  return [TIPOS[p.tipo] || p.tipo, p.sabor, fmtPeso(num(p.peso_g)), m.pct != null ? fmtPct(m.pct) + ' proteína' : ''].filter(Boolean).join(' · ');
+  return [TIPOS[p.tipo] || p.tipo, p.sabor, fmtPeso(num(p.peso_g)), m.pct != null ? fmtPct(m.pct) + ' proteína' + (m.verificado ? ' (laudo)' : '') : ''].filter(Boolean).join(' · ');
 }
 function upsertLocal(lista, chave, obj) {
   const arr = S.cache[lista];
@@ -547,6 +651,25 @@ const tagStatus = m => {
 };
 const linkOferta = o => o.cot.url || ((S.cache.monitores.find(m => m.monitor_id === o.cot.monitor_id) || {}).url) || o.loja.url || '';
 
+// ---- comprar agora ou esperar?
+const TAG_MOMENTO = {
+  comprar: '<span class="tag ok">▼ bom momento</span>',
+  normal: '<span class="tag ac">● preço normal</span>',
+  esperar: '<span class="tag warn">▲ caro agora</span>',
+};
+const tagMomento = d => !d || d.estado === 'sem-preco' ? '' : d.historicoCurto ? '<span class="tag">histórico curto</span>' : TAG_MOMENTO[d.estado];
+function fraseMomento(d) {
+  if (!d || d.estado === 'sem-preco') return 'Sem preço disponível hoje.';
+  const pct = Math.round(d.posicao * 100);
+  const ultima = d.ultimaVezBom != null ? ` (última vez ${d.ultimaVezBom === 1 ? 'ontem' : `há ${d.ultimaVezBom} dias`})` : '';
+  let f;
+  if (d.estado === 'comprar') f = `Bom momento: hoje está mais barato que em ${pct} % dos últimos ${d.dias} dias.`;
+  else if (d.estado === 'esperar') f = `Caro agora: mais caro que em ${100 - pct} % dos últimos ${d.dias} dias. Se puder esperar, costuma chegar a ${fmtR(d.bom)}${ultima}.`;
+  else f = `Preço comum: mais barato que em ${pct} % dos últimos ${d.dias} dias. Um bom preço para este produto é até ${fmtR(d.bom)}${ultima}.`;
+  if (d.historicoCurto) f += ` Histórico curto (${d.dias} dia${d.dias === 1 ? '' : 's'}): a indicação fica confiável a partir de 14 dias de coleta.`;
+  return f;
+}
+
 // ---- ranking (RP-16..RP-18, RP-21)
 function telaInicio() {
   let h = topo('Whey', `<button class="pri" data-a="modal" data-t="novo" aria-label="Adicionar">＋</button>`);
@@ -554,8 +677,8 @@ function telaInicio() {
     h += `<div class="card"><b>Conecte sua planilha</b><p class="muted small">Informe a URL do Web App e o token para sincronizar. Sem isso o app funciona só no aparelho e o robô não coleta.</p>
       <button class="pri w100" data-a="ir" data-h="#/config">Configurar</button></div>`;
   }
-  const agora = Date.now(), f = S.filtros, jan = janela();
-  const rk = montarRanking(S.cache, { ...f, janela_dias: jan }, agora);
+  const agora = Date.now(), f = filtroAtual(), jan = f.janela_dias;
+  const rk = montarRanking(S.cache, f, agora);
   const alvos = montarRanking(S.cache, { janela_dias: jan }, agora).filter(r => r.abaixoAlvo);
   if (alvos.length) {
     h += `<div class="card" id="alertas"><b>🏷️ Abaixo do preço-alvo</b>${alvos.map(r => `
@@ -572,9 +695,39 @@ function telaInicio() {
       <select id="f-tipo" aria-label="Tipo">${opt('', 'Tipo', f.tipo)}${Object.entries(TIPOS).map(([k, v]) => opt(k, v, f.tipo)).join('')}</select>
       <select id="f-marca" aria-label="Marca">${opt('', 'Marca', f.marca)}${marcas.map(m => opt(m, m, f.marca)).join('')}</select>
       <select id="f-loja" aria-label="Loja">${opt('', 'Loja', f.loja)}${lojasOrd().map(l => opt(l.loja_id, l.nome, f.loja)).join('')}</select></div>
-    <div class="chips mt">${[[1, '24 h'], [7, '7 dias'], [30, '30 dias'], [0, 'Tudo']].map(([d, t]) =>
+    ${f.semLactose ? '<div class="muted small mt">Só isolados e hidrolisados: "evitar lactose" está ligado nas Configurações.</div>' : ''}</div>`;
+
+  // Histórico diário de cada produto: decide o momento (últimos 90 dias) e desenha o comparativo
+  const diasGraf = S.filtros.dias_graf || 30;
+  const comp = serieComparativa(S.cache, f, Math.max(90, diasGraf), agora);
+  const decisao = {};
+  for (const sc of comp) decisao[sc.produto.produto_id] = decisaoCompra(sc.pontos.slice(-90));
+
+  const lider = rk.find(r => r.melhor.ce && r.melhor.porKg != null);
+  if (lider) {
+    const segundo = rk.find(r => r !== lider && r.melhor.ce && r.melhor.porKg != null);
+    const d = decisao[lider.produto.produto_id];
+    const vantagem = segundo ? Math.round((1 - lider.melhor.porKg / segundo.melhor.porKg) * 100) : null;
+    // Algum produto já esteve bem mais barato por kg de proteína do que o líder está hoje?
+    const melhorJa = comp.filter(sc => sc.minimo && sc.minimo.porKg < lider.melhor.porKg * 0.95)
+      .sort((a, b) => a.minimo.porKg - b.minimo.porKg)[0];
+    const quando = k => k === 0 ? 'hoje' : k === 1 ? 'ontem' : `há ${k} dias`;
+    h += `<div class="card lider" id="lider"><div class="row"><span class="grow muted small">Melhor compra agora</span>${tagMomento(d)}</div>
+      <a href="#/produto/${encodeURIComponent(lider.produto.produto_id)}" style="color:inherit;text-decoration:none">
+        <b>${esc(nomeProd(lider.produto))}</b>
+        <div class="mt"><span class="valor">${fmtR(lider.melhor.porKg)}</span> <span class="muted small">/kg de proteína · ${fmtR(lider.melhor.ce.custo)} na ${esc(lider.melhor.loja.nome || '?')}</span></div></a>
+      <p class="small" style="margin:8px 0 0">${segundo ? `${vantagem > 0 ? `${vantagem} % mais barato` : 'Empatado'} por kg de proteína que o 2º, ${esc(nomeProd(segundo.produto))} (${fmtR(segundo.melhor.porKg)}). ` : ''}${fraseMomento(d)}</p>
+      ${melhorJa ? `<p class="small muted" style="margin:6px 0 0">Já houve oferta melhor: ${esc(nomeProd(melhorJa.produto))} chegou a ${fmtR(melhorJa.minimo.porKg)}/kg ${quando(melhorJa.minimo.k)}.</p>` : ''}</div>`;
+  }
+
+  h += `<div class="card" id="comparativo"><b>Comparativo</b><div class="muted small">R$ por kg de proteína real, no melhor preço de cada dia · mais baixo = melhor</div>
+    <div class="chips mt">${[[30, '30 dias'], [90, '90 dias'], [180, '180 dias']].map(([d, t]) =>
+      `<button class="chip ${diasGraf === d ? 'on' : ''}" data-a="diasGraf" data-d="${d}">${t}</button>`).join('')}</div>
+    ${graficoComparativo(comp, diasGraf, decisao)}</div>`;
+
+  h += `<h2>Ranking</h2><div class="chips">${[[1, '24 h'], [7, '7 dias'], [30, '30 dias'], [0, 'Tudo']].map(([d, t]) =>
       `<button class="chip ${jan === d ? 'on' : ''}" data-a="janela" data-d="${d}">${t}</button>`).join('')}
-      <button class="chip ${f.soDisponiveis !== false ? '' : 'on'}" data-a="toggleDisp" style="margin-left:auto">${f.soDisponiveis !== false ? 'Ver esgotados' : 'Com esgotados'}</button></div></div>`;
+      <button class="chip ${f.soDisponiveis !== false ? '' : 'on'}" data-a="toggleDisp" style="margin-left:auto">${f.soDisponiveis !== false ? 'Ver esgotados' : 'Com esgotados'}</button></div>`;
 
   if (!rk.length) {
     h += `<p class="muted">${S.cache.cotacoes.length ? 'Nenhuma cotação com esses filtros.' : 'Nenhuma cotação ainda. Toque em ＋ para monitorar o link de uma oferta.'}</p>`;
@@ -585,11 +738,11 @@ function telaInicio() {
     return `<div class="card rk ${r.abaixoAlvo ? 'alvo' : ''}" data-pid="${esc(p.produto_id)}">
       <a href="#/produto/${encodeURIComponent(p.produto_id)}">
         <div class="row"><span class="pos">${i + 1}</span><span class="grow"><b>${esc(nomeProd(p))}</b><div class="muted small clamp">${esc(descProd(p))}</div></span></div>
-        <div class="row mt"><div class="grow">${o.ce ? (o.porKg != null ? `<span class="valor">${fmtR(o.porKg)}</span> <span class="muted small">/kg proteína</span>`
+        <div class="row mt"><div class="grow">${o.ce ? (o.porKg != null ? `<span class="valor">${fmtR(o.porKg)}</span> <span class="muted small">/kg proteína</span>${o.verificado ? ' <span class="tag ok">laudo</span>' : ''}`
           : `<span class="muted small">cadastre peso e proteína</span>`) : '<span class="tag warn">esgotado</span>'}</div>
           <div class="right">${o.ce ? `<b class="num">${fmtR(o.ce.custo)}</b><div class="muted small num">${o.porDose != null ? fmtR(o.porDose) + '/dose' : ''}</div>` : ''}</div></div>
         <div class="muted small mt">${esc(o.loja.nome || '?')} · ${idade(o.cot.data, agora)} · ${o.cot.origem === 'manual' ? 'manual' : 'robô'}${outras ? ` · +${outras} loja${outras > 1 ? 's' : ''}` : ''}
-          ${r.abaixoAlvo ? ' <span class="tag ok">abaixo do alvo</span>' : ''}</div></a>
+          ${o.ce ? tagMomento(decisao[p.produto_id]) : ''}${r.abaixoAlvo ? ' <span class="tag ok">abaixo do alvo</span>' : ''}</div></a>
       ${link ? `<a class="btn ir" href="${esc(link)}" target="_blank" rel="noopener" aria-label="Abrir oferta na loja">↗</a>` : ''}</div>`;
   }).join('');
   if (S.cache.atualizadoEm) h += `<p class="muted small center">Dados da planilha de ${new Date(S.cache.atualizadoEm).toLocaleString('pt-BR')}</p>`;
@@ -602,7 +755,7 @@ const corLoja = id => { const i = lojasOrd().findIndex(l => l.loja_id === id); r
 
 function graficoHist(h, alvo) {
   const series = h.series.filter(s => s.pontos.length);
-  S.ui.graf = [];
+  const pontosDica = S.ui.grafs.graf = [];
   if (!series.length) return '<p class="muted small">Sem cotações disponíveis para desenhar.</p>';
   const W = 340, H = 180, m = { l: 52, r: 12, t: 14, b: 22 };
   const pts = series.flatMap(s => s.pontos);
@@ -628,7 +781,7 @@ function graficoHist(h, alvo) {
     if (s.pontos.length > 1) svg += `<polyline fill="none" stroke="${cor}" stroke-width="2" stroke-linejoin="round" points="${s.pontos.map(p => `${x(p.t).toFixed(1)},${y(p.custo).toFixed(1)}`).join(' ')}"/>`;
     s.pontos.forEach(p => {
       svg += `<circle cx="${x(p.t).toFixed(1)}" cy="${y(p.custo).toFixed(1)}" r="4" fill="${cor}" stroke="var(--bg2)" stroke-width="2"/>`;
-      S.ui.graf.push({ x: x(p.t), y: y(p.custo), txt: `${fmtData(p.cot.data)} · ${nomeLoja(s.loja_id)} · ${fmtR(p.custo)}` });
+      pontosDica.push({ x: x(p.t), y: y(p.custo), txt: `${fmtData(p.cot.data)} · ${nomeLoja(s.loja_id)} · ${fmtR(p.custo)}` });
       if (!menorPt || p.custo < menorPt.custo) menorPt = p;
     });
   });
@@ -637,7 +790,74 @@ function graficoHist(h, alvo) {
   svg += `<text class="eixo" x="${Math.min(Math.max(mx, m.l + 30), W - m.r - 30).toFixed(1)}" y="${(my + 16 > H - m.b ? my - 9 : my + 16).toFixed(1)}" text-anchor="middle">${esc(fmtR(menorPt.custo))}</text>`;
   svg += `<line id="graf-x" class="grade" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" style="display:none"/>`;
   const leg = series.length > 1 ? `<div class="leg">${series.map(s => `<span><i style="background:${corLoja(s.loja_id)}"></i>${esc(nomeLoja(s.loja_id))}</span>`).join('')}</div>` : '';
-  return `<div class="graf">${leg}<svg id="graf" viewBox="0 0 ${W} ${H}" role="img" aria-label="Custo efetivo por dia e por loja">${svg}</svg><div id="graf-tip" class="tip"></div></div>`;
+  return `<div class="graf">${leg}<svg id="graf" data-graf viewBox="0 0 ${W} ${H}" role="img" aria-label="Custo efetivo por dia e por loja">${svg}</svg><div id="graf-tip" class="tip"></div></div>`;
+}
+
+/**
+ * Gráfico comparativo: uma linha por produto (R$/kg de proteína real no melhor preço do dia).
+ * Os 5 melhores de hoje ganham cor; a cor segue o produto (ordem alfabética entre eles), não a posição.
+ * Os demais ficam em cinza, ao fundo. O toque mostra o dia com os valores dos destacados.
+ */
+function graficoComparativo(comp, dias, decisao) {
+  const id = 'grafc';
+  S.ui.grafs[id] = [];
+  const series = comp.map(sc => ({ ...sc, pontos: sc.pontos.slice(-dias) })).filter(sc => sc.pontos.some(x => x.porKg != null));
+  if (!series.length) return '<p class="muted small">Sem cotações de produtos com peso, dose e proteína cadastrados.</p>';
+  const ultimo = sc => { for (let i = sc.pontos.length - 1; i >= 0; i--) if (sc.pontos[i].porKg != null) return sc.pontos[i].porKg; return Infinity; };
+  const ord = series.slice().sort((a, b) => (a.atual ?? Infinity) - (b.atual ?? Infinity) || ultimo(a) - ultimo(b));
+  const dest = ord.slice(0, 5), outros = ord.slice(5);
+  const cor = new Map(dest.slice().sort((a, b) => porNome(a.produto, b.produto)).map((sc, i) => [sc.produto.produto_id, CORES[i]]));
+  const W = 340, H = 200, m = { l: 52, r: 12, t: 12, b: 22 };
+  const n = series[0].pontos.length;
+  let iIni = n - 1;
+  for (const sc of series) { const i = sc.pontos.findIndex(x => x.porKg != null); if (i >= 0 && i < iIni) iIni = i; }
+  const t1 = series[0].pontos[n - 1].t;
+  let t0 = series[0].pontos[iIni].t;
+  if (t1 - t0 < DIA) t0 = t1 - DIA;
+  const vs = series.flatMap(sc => sc.pontos.map(x => x.porKg).filter(v => v != null));
+  let v0 = Math.min(...vs), v1 = Math.max(...vs);
+  const folga = Math.max((v1 - v0) * 0.08, 5); v0 -= folga; v1 += folga;
+  const x = t => m.l + (t - t0) / (t1 - t0) * (W - m.l - m.r);
+  const y = v => m.t + (1 - (v - v0) / (v1 - v0)) * (H - m.t - m.b);
+  let svg = '';
+  [v0 + folga, (v0 + v1) / 2, v1 - folga].forEach(v => {
+    svg += `<line class="grade" x1="${m.l}" x2="${W - m.r}" y1="${y(v).toFixed(1)}" y2="${y(v).toFixed(1)}"/>
+      <text class="eixo" x="${m.l - 6}" y="${(y(v) + 3).toFixed(1)}" text-anchor="end">${esc(fmtR(Math.round(v)).replace(',00', ''))}</text>`;
+  });
+  svg += `<text class="eixo" x="${m.l}" y="${H - 6}">${fmtData(t0)}</text><text class="eixo" x="${W - m.r}" y="${H - 6}" text-anchor="end">hoje</text>`;
+  // Linha quebrada nos dias sem preço; ponto isolado vira um círculo pequeno
+  const linha = (sc, c, w) => {
+    let seg = [], out = '';
+    const fecha = () => {
+      if (seg.length > 1) out += `<polyline fill="none" stroke="${c}" stroke-width="${w}" stroke-linejoin="round" stroke-linecap="round" points="${seg.join(' ')}"/>`;
+      else if (seg.length === 1) { const [a, b] = seg[0].split(','); out += `<circle cx="${a}" cy="${b}" r="${w > 1.5 ? 3 : 2}" fill="${c}"/>`; }
+      seg = [];
+    };
+    sc.pontos.forEach(p => { if (p.porKg == null || p.t < t0) fecha(); else seg.push(`${x(p.t).toFixed(1)},${y(p.porKg).toFixed(1)}`); });
+    fecha();
+    return out;
+  };
+  outros.forEach(sc => { svg += linha(sc, '#4b5263', 1.5); });
+  dest.slice().reverse().forEach(sc => {
+    const c = cor.get(sc.produto.produto_id);
+    svg += linha(sc, c, 2);
+    const u = sc.pontos[sc.pontos.length - 1];
+    if (u.porKg != null) svg += `<circle cx="${x(u.t).toFixed(1)}" cy="${y(u.porKg).toFixed(1)}" r="4" fill="${c}" stroke="var(--bg2)" stroke-width="2"/>`;
+  });
+  // Dica: um alvo por dia, com os destacados daquele dia em ordem de R$/kg
+  const curto = p => { const t = nomeProd(p); return t.length > 26 ? t.slice(0, 25) + '…' : t; };
+  for (let i = iIni; i < n; i++) {
+    const t = series[0].pontos[i].t;
+    const linhas = dest.map(sc => [sc.produto, sc.pontos[i].porKg]).filter(([, v]) => v != null).sort((a, b) => a[1] - b[1]);
+    if (!linhas.length) continue;
+    S.ui.grafs[id].push({ x: x(t), y: m.t, txt: `${fmtData(t)}\n` + linhas.map(([p, v]) => `${fmtR(v)}  ${curto(p)}`).join('\n') });
+  }
+  svg += `<line id="${id}-x" class="grade" x1="0" x2="0" y1="${m.t}" y2="${H - m.b}" style="display:none"/>`;
+  const leg = dest.map(sc => `<a class="legc" href="#/produto/${encodeURIComponent(sc.produto.produto_id)}"><i style="background:${cor.get(sc.produto.produto_id)}"></i>
+      <span class="grow clamp">${esc(nomeProd(sc.produto))}</span><span class="num">${sc.atual != null ? fmtR(sc.atual) : '<span class="muted">sem preço hoje</span>'}</span>${tagMomento(decisao[sc.produto.produto_id])}</a>`).join('')
+    + (outros.length ? `<div class="legc muted"><i style="background:#4b5263"></i>Outros ${outros.length} produto${outros.length > 1 ? 's' : ''} (em cinza)</div>` : '');
+  return `<div class="graf"><svg id="${id}" data-graf viewBox="0 0 ${W} ${H}" role="img" aria-label="R$ por kg de proteína por dia, por produto">${svg}</svg><div id="${id}-tip" class="tip ml"></div></div>
+    <div class="mt">${leg}</div>`;
 }
 
 function telaProduto(id) {
@@ -649,17 +869,28 @@ function telaProduto(id) {
   const menor = srv && (!hs.menor || srv.custo < hs.menor.custo) ? srv : hs.menor;
   const atual = hs.atual, alvo = num(p.preco_alvo);
   const mAtual = metricas(p, atual && atual.custo);
-  const av = { abaixo: '<span class="tag ok">abaixo da mediana</span>', perto: '<span class="tag ac">na média</span>', acima: '<span class="tag warn">acima da mediana</span>' }[hs.avaliacao] || '';
+  const dec = decisaoCompra(melhorPorDia(S.cache, id, 90, agora));
   let h = topoVoltar(nomeProd(p), `<button data-a="ir" data-h="#/editar-produto/${encodeURIComponent(id)}" aria-label="Editar produto">✎</button>`);
   h += `<div class="muted small">${esc(descProd(p))}</div>`;
   h += `<div class="stats mt">
     <div class="stat"><span class="muted small">Melhor agora</span><b>${atual ? fmtR(atual.custo) : '—'}</b>
       <span class="muted small">${atual ? `${esc(nomeLoja(atual.loja_id))} · ${idade(atual.cot.data, agora)}` : `nada nos últimos ${jan} d`}</span></div>
     <div class="stat"><span class="muted small">Por kg de proteína</span><b>${fmtR(mAtual.porKg)}</b>
-      <span class="muted small">${mAtual.porDose != null ? fmtR(mAtual.porDose) + ' por dose' : ''}</span></div>
+      <span class="muted small">${mAtual.pct != null ? (mAtual.verificado ? 'proteína do laudo' : 'proteína do rótulo') : ''}${mAtual.porDose != null ? ' · ' + fmtR(mAtual.porDose) + '/dose' : ''}</span></div>
     <div class="stat"><span class="muted small">Menor já visto</span><b>${menor ? fmtR(menor.custo) : '—'}</b>
       <span class="muted small">${menor ? `${fmtData(menor.data)} · ${esc(nomeLoja(menor.loja_id))}` : ''}</span></div>
-    <div class="stat"><span class="muted small">Mediana 90 dias</span><b>${fmtR(hs.mediana90)}</b><span class="small">${av}</span></div></div>`;
+    <div class="stat"><span class="muted small">Bom preço até</span><b>${fmtR(dec.bom)}</b>
+      <span class="muted small">${dec.dias ? `mediana ${fmtR(dec.mediana)} em ${dec.dias} d` : ''}</span></div></div>`;
+  const pos = montarRanking(S.cache, { janela_dias: jan }, agora).filter(r => r.melhor.ce && r.melhor.porKg != null);
+  const iPos = pos.findIndex(r => r.produto.produto_id === id);
+  h += `<div class="card" id="momento"><div class="row"><b class="grow">Comprar agora?</b>${tagMomento(dec)}</div>
+    <p class="small" style="margin:8px 0">${fraseMomento(dec)}</p>
+    ${iPos >= 0 ? `<p class="small muted" style="margin:8px 0 0">${iPos === 0 ? 'É o melhor custo por kg de proteína entre os seus produtos hoje.'
+      : `É o ${iPos + 1}º em custo por kg de proteína hoje; o 1º é ${esc(nomeProd(pos[0].produto))} (${fmtR(pos[0].melhor.porKg)}/kg).`}</p>` : ''}</div>`;
+  if (p.laudo_fonte || num(p.proteina_laudo_g) != null) {
+    const fonte = p.laudo_fonte ? (/^https?:\/\//i.test(p.laudo_fonte) ? `<a href="${esc(p.laudo_fonte)}" target="_blank" rel="noopener">fonte ↗</a>` : esc(p.laudo_fonte)) : '';
+    h += `<div class="card small"><b>Laudo:</b> ${num(p.proteina_laudo_g) != null ? `${fmtN(num(p.proteina_laudo_g))} g de proteína por dose (rótulo: ${fmtN(num(p.proteina_dose_g))} g)` : 'sem valor medido'}${fonte ? ' · ' + fonte : ''}</div>`;
+  }
   if (alvo > 0) h += `<div class="card row"><span class="grow">Preço-alvo <b>${fmtR(alvo)}</b> <span class="muted small">(${fmtR(metricas(p, alvo).porKg)}/kg proteína)</span></span>
     ${atual && atual.custo <= alvo ? '<span class="tag ok">abaixo do alvo</span>' : ''}</div>`;
   h += `<div class="card"><b>Custo efetivo por dia</b>${graficoHist(hs, alvo)}</div>`;
@@ -695,17 +926,29 @@ function telaProdutos() {
     .sort((a, b) => String(a.marca).localeCompare(String(b.marca), 'pt-BR') || String(a.nome).localeCompare(String(b.nome), 'pt-BR'));
   let h = topo('Produtos');
   h += `<input id="busca" placeholder="Buscar produto" autocomplete="off">`;
-  let marca = null;
-  h += '<div class="card">';
-  lista.forEach(p => {
-    if (p.marca !== marca) { marca = p.marca; h += `<div class="muted small mt" data-grupo>${esc(marca || 'Sem marca')}</div>`; }
-    const pct = metricas(p, null).pct;
-    h += `<a class="li" href="#/produto/${encodeURIComponent(p.produto_id)}" data-busca="${esc(nomeProd(p).toLowerCase() + ' ' + (p.sabor || '').toLowerCase())}">
-      <span class="grow"><b>${esc(p.nome)}</b><div class="muted small">${esc(descProd(p))}</div></span>
-      ${pctSuspeita(pct) || pct == null ? '<span class="tag warn">confira</span>' : ''}${bool(p.ativo, true) ? '' : '<span class="tag">arquivado</span>'}</a>`;
-  });
+  // Agrupado por marca, fechado por padrão; o cabeçalho mostra o melhor R$/kg de proteína da marca
+  const agora = Date.now();
+  const porKg = {};
+  for (const r of montarRanking(S.cache, { janela_dias: janela() }, agora)) if (r.melhor.ce) porKg[r.produto.produto_id] = r.melhor.porKg;
+  const grupos = new Map();
+  lista.forEach(p => { const k = p.marca || 'Sem marca'; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(p); });
+  for (const [marca, prods] of grupos) {
+    const aberta = S.ui.marcasAbertas.has(marca);
+    const melhores = prods.map(p => porKg[p.produto_id]).filter(v => v != null);
+    const avisos = prods.filter(p => { const pct = metricas(p, null).pct; return pct == null || pctSuspeita(pct); }).length;
+    h += `<div class="card grupo" data-grupo="${esc(marca)}">
+      <button class="li" data-a="toggleMarca" data-m="${esc(marca)}" aria-expanded="${aberta}"><span class="seta" aria-hidden="true"></span>
+        <span class="grow"><b>${esc(marca)}</b><div class="muted small">${prods.length} produto${prods.length > 1 ? 's' : ''}${melhores.length ? ` · melhor ${fmtR(Math.min(...melhores))}/kg proteína` : ''}</div></span>
+        ${avisos ? '<span class="tag warn">confira</span>' : ''}</button>
+      <div class="grupo-corpo" ${aberta ? '' : 'hidden'}>${prods.map(p => {
+        const pct = metricas(p, null).pct;
+        return `<a class="li" href="#/produto/${encodeURIComponent(p.produto_id)}" data-busca="${esc(nomeProd(p).toLowerCase() + ' ' + (p.sabor || '').toLowerCase())}">
+          <span class="grow"><b>${esc(p.nome)}</b><div class="muted small">${esc(descProd(p))}</div></span>
+          ${porKg[p.produto_id] != null ? `<span class="num small">${fmtR(porKg[p.produto_id])}/kg</span>` : ''}
+          ${pctSuspeita(pct) || pct == null ? '<span class="tag warn">confira</span>' : ''}${bool(p.ativo, true) ? '' : '<span class="tag">arquivado</span>'}</a>`;
+      }).join('')}</div></div>`;
+  }
   if (!lista.length) h += '<p class="muted">Catálogo vazio.</p>';
-  h += '</div>';
   h += `<button class="pri big mt" data-a="ir" data-h="#/editar-produto/novo">+ Novo produto</button>`;
   h += `<button class="ghost w100 mt muted" data-a="toggleArq">${S.ui.verArquivados ? 'Ocultar' : 'Mostrar'} arquivados</button>`;
   return h + nav('produtos');
@@ -722,17 +965,20 @@ function camposProduto(p, pre = 'p') {
     <div class="grid3 mt"><label>Peso total (g)<input id="${pre}-peso" data-pct="${pre}" inputmode="numeric" value="${esc(p.peso_g)}" placeholder="900"></label>
       <label>Dose (g)<input id="${pre}-dose" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.dose_g)))}" placeholder="30"></label>
       <label>Proteína/dose (g)<input id="${pre}-prot" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.proteina_dose_g)))}" placeholder="24"></label></div>
+    <div class="grid2 mt"><label>Proteína/dose no laudo (g)<input id="${pre}-laudo" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.proteina_laudo_g)))}" placeholder="opcional"></label>
+      <label>Fonte do laudo<input id="${pre}-laudo-fonte" value="${esc(p.laudo_fonte)}" placeholder="link ou nome do laboratório"></label></div>
     <div class="small mt" id="${pre}-pct">${pctTxt(pct)}</div>
+    <p class="muted small">Se um laudo de laboratório mediu menos proteína que o rótulo, informe o valor medido: o ranking passa a usá-lo no R$/kg de proteína.</p>
     <label class="f">Preço-alvo (R$ de custo efetivo, opcional)</label><input id="${pre}-alvo" inputmode="decimal" value="${esc(fmtN(num(p.preco_alvo)))}">
     <p class="muted small">Kit (ex.: 2 × 900 g): informe o peso total. Confira dose e proteína na tabela nutricional do rótulo.</p>`;
 }
 const pctTxt = pct => pct == null ? '<span class="muted">% de proteína: informe dose e proteína</span>'
-  : `% de proteína: <b>${fmtPct(pct)}</b>${pctSuspeita(pct) ? ' <span class="aviso">— fora de 50–95 %, confira os valores</span>' : ''}`;
+  : `% de proteína real: <b>${fmtPct(pct)}</b>${pctSuspeita(pct) ? ' <span class="aviso">— fora de 50–95 %, confira os valores</span>' : ''}`;
 function lerProduto(pre, base) {
   return Object.assign({}, base, {
     marca: val(`#${pre}-marca`), nome: val(`#${pre}-nome`), tipo: val(`#${pre}-tipo`), sabor: val(`#${pre}-sabor`),
     peso_g: num(val(`#${pre}-peso`)) ?? '', dose_g: num(val(`#${pre}-dose`)) ?? '', proteina_dose_g: num(val(`#${pre}-prot`)) ?? '',
-    preco_alvo: num(val(`#${pre}-alvo`)) ?? '',
+    preco_alvo: num(val(`#${pre}-alvo`)) ?? '', proteina_laudo_g: num(val(`#${pre}-laudo`)) ?? '', laudo_fonte: val(`#${pre}-laudo-fonte`),
   });
 }
 
@@ -901,7 +1147,9 @@ function telaConfig() {
       <label>Pausar após falhas<input id="r-falhas" inputmode="numeric" value="${cfgVal('falhas_para_pausar')}"></label>
       <label>Alerta por e-mail<select id="r-email"><option value="sim" ${bool(cfg.email_alertas, true) ? 'selected' : ''}>sim</option><option value="nao" ${bool(cfg.email_alertas, true) ? '' : 'selected'}>não</option></select></label>
       <label>Histórico no celular (dias)<input id="r-hist" inputmode="numeric" value="${cfgVal('historico_dias')}"></label>
+      <label>Evitar lactose<select id="r-lact"><option value="nao" ${semLactose() ? '' : 'selected'}>não</option><option value="sim" ${semLactose() ? 'selected' : ''}>sim</option></select></label>
     </div>
+    <p class="muted small">Evitar lactose deixa só isolados e hidrolisados no ranking e no comparativo.</p>
     <div class="row mt"><button class="grow" data-a="coletarTodos" ${S.ui.coletando || !S.cfg.url ? 'disabled' : ''}>Coletar todos agora</button><button class="pri grow" data-a="salvarConfigApp">Salvar</button></div></div>`;
   h += `<p class="muted small center">v${VERSAO} · <a href="?test">rodar testes</a></p>`;
   return h + nav('config');
@@ -965,6 +1213,14 @@ const acoes = {
   janela: el => { S.filtros.janela_dias = Number(el.dataset.d); salvar.filtros(); render(); },
   toggleDisp: () => { S.filtros.soDisponiveis = S.filtros.soDisponiveis === false; salvar.filtros(); render(); },
   toggleArq: () => { S.ui.verArquivados = !S.ui.verArquivados; render(); },
+  diasGraf: el => { S.filtros.dias_graf = Number(el.dataset.d); salvar.filtros(); render(); },
+  // Abre/fecha a marca sem redesenhar a tela (mantém a busca digitada)
+  toggleMarca: el => {
+    const m = el.dataset.m, aberta = !S.ui.marcasAbertas.has(m);
+    if (aberta) S.ui.marcasAbertas.add(m); else S.ui.marcasAbertas.delete(m);
+    el.setAttribute('aria-expanded', aberta);
+    el.nextElementSibling.hidden = !aberta;
+  },
 
   // produtos
   salvarProduto: el => {
@@ -1113,7 +1369,7 @@ const acoes = {
   salvarConfigApp: () => {
     const cfg = S.cache.config;
     const campos = { intervalo_coleta_h: num(val('#r-int')), janela_dias: num(val('#r-jan')), falhas_para_pausar: num(val('#r-falhas')),
-      historico_dias: num(val('#r-hist')), cep: val('#r-cep').replace(/\D/g, ''), email_alertas: val('#r-email') };
+      historico_dias: num(val('#r-hist')), cep: val('#r-cep').replace(/\D/g, ''), email_alertas: val('#r-email'), evitar_lactose: val('#r-lact') };
     Object.entries(campos).forEach(([k, v]) => {
       if (v == null || (typeof v === 'number' && v < 0) || String(v) === String(cfg[k] ?? (DEF[k] ?? ''))) return;
       cfg[k] = v;
@@ -1137,11 +1393,19 @@ document.addEventListener('input', ev => {
   const t = ev.target;
   if (t.id === 'busca') {
     const q = t.value.trim().toLowerCase();
-    document.querySelectorAll('[data-busca]').forEach(x => { x.style.display = !q || x.dataset.busca.includes(q) ? '' : 'none'; });
-    document.querySelectorAll('[data-grupo]').forEach(x => { x.style.display = q ? 'none' : ''; });
+    document.querySelectorAll('[data-busca]').forEach(x => { x.style.display = !q || x.dataset.busca.includes(q) || x.closest('[data-grupo]').dataset.grupo.toLowerCase().includes(q) ? '' : 'none'; });
+    // Buscando, abre as marcas com resultado e esconde as outras; sem busca, volta ao aberto/fechado escolhido
+    document.querySelectorAll('[data-grupo]').forEach(g => {
+      const algum = [...g.querySelectorAll('[data-busca]')].some(x => x.style.display !== 'none');
+      g.style.display = !q || algum ? '' : 'none';
+      const aberta = q ? algum : S.ui.marcasAbertas.has(g.dataset.grupo);
+      g.querySelector('.grupo-corpo').hidden = !aberta;
+      g.querySelector('[data-a="toggleMarca"]').setAttribute('aria-expanded', aberta);
+    });
   } else if (t.dataset.pct) {
     const pre = t.dataset.pct;
-    $(`#${pre}-pct`).innerHTML = pctTxt(metricas({ peso_g: val(`#${pre}-peso`), dose_g: val(`#${pre}-dose`), proteina_dose_g: val(`#${pre}-prot`) }, null).pct);
+    $(`#${pre}-pct`).innerHTML = pctTxt(metricas({ peso_g: val(`#${pre}-peso`), dose_g: val(`#${pre}-dose`), proteina_dose_g: val(`#${pre}-prot`),
+      proteina_laudo_g: val(`#${pre}-laudo`) }, null).pct);
   } else if (t.id === 'm-url' && S.ui.nm) {
     S.ui.nm.url = t.value.trim();
   }
@@ -1161,24 +1425,35 @@ document.addEventListener('change', ev => {
 });
 
 // Gráfico: toque ou ponteiro mostra o ponto mais próximo (crosshair + dica)
+// Vale para todo <svg data-graf>: os pontos ficam em S.ui.grafs[id]; a linha e a dica são #id-x e #id-tip
 function dicaGrafico(ev) {
-  const svg = ev.target.closest && ev.target.closest('#graf');
-  if (!svg || !S.ui.graf.length) return;
+  const svg = ev.target.closest && ev.target.closest('svg[data-graf]');
+  const pts = svg && S.ui.grafs[svg.id];
+  if (!pts || !pts.length) return;
   const r = svg.getBoundingClientRect(), W = svg.viewBox.baseVal.width;
   const vx = (ev.clientX - r.left) * W / r.width;
-  const p = S.ui.graf.reduce((a, b) => Math.abs(b.x - vx) < Math.abs(a.x - vx) ? b : a);
-  const lx = $('#graf-x'), tip = $('#graf-tip');
+  const p = pts.reduce((a, b) => Math.abs(b.x - vx) < Math.abs(a.x - vx) ? b : a);
+  const lx = $(`#${svg.id}-x`), tip = $(`#${svg.id}-tip`);
   lx.setAttribute('x1', p.x); lx.setAttribute('x2', p.x); lx.style.display = '';
   tip.textContent = p.txt;
-  tip.style.left = Math.min(Math.max(p.x / W * r.width, 90), r.width - 90) + 'px';
-  tip.style.top = Math.max(0, p.y / W * r.width - 40) + 'px';
   tip.classList.add('on');
+  const px = p.x / W * r.width;
+  if (tip.classList.contains('ml')) {
+    // Dica de várias linhas: fica do lado oposto ao dedo, dentro do gráfico
+    const w = tip.offsetWidth;
+    tip.style.left = (px > r.width / 2 ? Math.max(0, px - w - 12) : Math.min(px + 12, r.width - w)) + 'px';
+    tip.style.top = '0px';
+  } else {
+    tip.style.left = Math.min(Math.max(px, 90), r.width - 90) + 'px';
+    tip.style.top = Math.max(0, p.y / W * r.width - 40) + 'px';
+  }
 }
 document.addEventListener('pointermove', dicaGrafico);
 document.addEventListener('pointerdown', dicaGrafico);
 document.addEventListener('pointerout', ev => {
-  if (ev.target.closest && ev.target.closest('#graf') && !(ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest('#graf'))) {
-    const tip = $('#graf-tip'), lx = $('#graf-x');
+  const svg = ev.target.closest && ev.target.closest('svg[data-graf]');
+  if (svg && !(ev.relatedTarget && ev.relatedTarget.closest && ev.relatedTarget.closest('#' + svg.id))) {
+    const tip = $(`#${svg.id}-tip`), lx = $(`#${svg.id}-x`);
     if (tip) tip.classList.remove('on');
     if (lx) lx.style.display = 'none';
   }
@@ -1276,7 +1551,44 @@ function rodarTestes() {
   t('mediana de 90 dias ignora pontos antigos', hist.mediana90 === 288, hist.mediana90);
   t('melhor atual na janela e avaliação', hist.atual.custo === 279 && hist.avaliacao === 'abaixo', hist.atual);
 
-  t('iso() tem fuso', /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/.test(iso(Date.now())), iso(Date.now()));
+  // proteína real e lactose
+  m = metricas({ peso_g: 900, dose_g: 30, proteina_dose_g: 24, proteina_laudo_g: 18 }, 200);
+  t('laudo substitui o rótulo no R$/kg (18 g em 30 g → 60 %)', perto(m.pct, 0.6) && m.verificado && perto(m.pctRotulo, 0.8) && perto(m.porKg, 370.37), m);
+  t('sem laudo: proteína do rótulo, não verificada', metricas({ peso_g: 900, dose_g: 30, proteina_dose_g: 24 }, 200).verificado === false);
+  t('isolado 10 % mais caro vence o concentrado quando entrega mais proteína',
+    metricas({ peso_g: 900, dose_g: 30, proteina_dose_g: 27 }, 165).porKg < metricas({ peso_g: 900, dose_g: 30, proteina_dose_g: 21 }, 150).porKg);
+  t('evitar lactose deixa só isolado e hidrolisado', montarRanking(dados, { janela_dias: 0, semLactose: true }, agora).map(r => r.produto.produto_id).join() === 'iso');
+
+  // melhor preço por dia: A tem PIX 10 %, B frete 20 abaixo de 300
+  const dd = { lojas: dados.lojas, produtos: dados.produtos, cotacoes: [
+    { produto_id: 'iso', loja_id: 'A', data: d(5), preco: 300 },                   // 270 de 5 dias atrás até hoje (validade 7 d)
+    { produto_id: 'iso', loja_id: 'B', data: d(3), preco: 240 },                   // 260
+    { produto_id: 'iso', loja_id: 'B', data: d(1), preco: 240, disponivel: false }, // B esgota
+    { produto_id: 'iso', loja_id: 'A', data: d(20), preco: 200 },                  // 180, vale de 20 a 14 dias atrás
+  ] };
+  let md = melhorPorDia(dd, 'iso', 6, agora);
+  t('melhor por dia: menor custo entre as lojas, esgotado não conta', md.map(x => x.custo).join() === '270,270,260,260,270,270' && md[2].loja_id === 'B' && md[5].k === 0, md);
+  md = melhorPorDia(dd, 'iso', 25, agora);
+  t('melhor por dia: cotação vale por 7 dias e depois some', md[24 - 20].custo === 180 && md[24 - 14].custo === 180 && md[24 - 13].custo === null, md.map(x => [x.k, x.custo]));
+  t('melhor por dia: filtro de loja', melhorPorDia(dd, 'iso', 6, agora, { loja: 'A' }).every(x => x.custo === 270));
+  const sc = serieComparativa(dd, {}, 6, agora);
+  t('comparativo: R$/kg por dia e menor da série', sc.length === 1 && sc[0].produto.produto_id === 'iso' && perto(sc[0].atual, 333.33) &&
+    perto(sc[0].minimo.porKg, 320.99) && sc[0].minimo.k === 3, sc.map(s => [s.atual, s.minimo]));
+
+  // comprar ou esperar
+  const ser = v => v.map((custo, i) => ({ k: v.length - 1 - i, custo }));
+  let dc = decisaoCompra(ser([300, 310, 320, 330, 300, 310, 320, 330, 300, 310, 320, 330, 300, 310, 280]));
+  t('comprar: hoje é o menor preço do histórico (o próprio dia conta meio)', dc.estado === 'comprar' && !dc.historicoCurto && perto(dc.posicao, 14.5 / 15), dc);
+  dc = decisaoCompra(ser([280, 290, 300, 280, 290, 300, 280, 290, 300, 280, 290, 300, 280, 290, 330]));
+  t('esperar: hoje é o mais caro; bom preço e quando foi a última vez', dc.estado === 'esperar' && dc.bom === 280 && dc.ultimaVezBom === 2, dc);
+  dc = decisaoCompra(ser(Array(15).fill(300)));
+  t('preço parado é normal, não bom momento', dc.estado === 'normal' && dc.posicao === 0.5, dc);
+  dc = decisaoCompra(ser(Array(12).fill(300).concat([280, 280, 280])));
+  t('queda que dura alguns dias continua bom momento', dc.estado === 'comprar', dc);
+  dc = decisaoCompra(ser([300, null, 310, null]));
+  t('sem preço hoje e histórico curto', dc.estado === 'sem-preco' && dc.historicoCurto && dc.dias === 2, dc);
+
+  t('iso() tem fuso',/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/.test(iso(Date.now())), iso(Date.now()));
   let f = [];
   enfileirar(f, { qid: 'a', op: 'upsert', aba: 'Cotacoes', id: '1', dados: { preco: 40 } });
   enfileirar(f, { qid: 'b', op: 'upsert', aba: 'Cotacoes', id: '1', dados: { frete: 10 } });

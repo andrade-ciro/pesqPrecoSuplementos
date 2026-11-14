@@ -109,6 +109,17 @@ const um = (lista, f) => lista.find(f) || {};
     'ranking 7 dias por R$/kg de proteína: ' + rk.map(x => x.slice(0, 60)).join(' | '));
   ok(/R\$ 293,56/.test(rk[1]) && /abaixo do alvo/.test(rk[1]) && /IsoWhey/.test(await page.textContent('#alertas')), 'destaque abaixo do preço-alvo');
   ok(/1 link com erro ou pausado/.test(await page.textContent('#app')), 'aviso de monitor pausado no início');
+  const lider = (await page.textContent('#lider')).replace(/\s+/g, ' ');
+  ok(/Prob Pure Whey/.test(lider) && /349,05/.test(lider) && /4 % mais barato por kg de proteína que o 2º, Max IsoWhey/.test(lider) &&
+    /Já houve oferta melhor: Velha Whey Velho chegou a R\$ 200,00\/kg há 40 dias/.test(lider), 'melhor compra agora: ' + lider);
+  ok((await page.$$('#grafc polyline')).length >= 1 && (await page.$$('#comparativo .legc')).length === 2, 'gráfico comparativo com legenda por produto (Whey Velho: só cotação de 40 dias, fora dos 30)');
+  const box = await page.$eval('#grafc', e => { const r = e.getBoundingClientRect(); return { w: r.width, h: r.height }; });
+  await page.hover('#grafc', { position: { x: box.w - 5, y: box.h / 2 } });
+  const dica = await page.$eval('#grafc-tip', e => e.classList.contains('on') ? e.textContent : '');
+  ok(/IsoWhey/.test(dica) && /Pure Whey/.test(dica), 'dica do comparativo lista os produtos do dia: ' + dica.replace(/\n/g, ' / '));
+  await page.mouse.move(5, 5);
+  await page.locator('#comparativo').screenshot({ path: SHOTS + '/02b-comparativo.png' });
+  ok(/histórico curto/.test(rk[1]), 'ranking marca o momento (histórico curto com 10 dias)');
   await page.screenshot({ path: SHOTS + '/02-ranking.png', fullPage: true });
   await page.click('[data-a=janela][data-d="30"]');
   rk = await textos('.rk');
@@ -125,7 +136,9 @@ const um = (lista, f) => lista.find(f) || {};
   await page.waitForSelector('#graf polyline');
   const hist = await page.textContent('#app');
   ok(/Menor já visto\s*R\$ 279,00/.test(hist), 'menor já visto usa o menor preço do dia (310 − 10 %)');
-  ok(/Mediana 90 dias/.test(hist) && /abaixo da mediana|na média|acima da mediana/.test(hist), 'mediana de 90 dias e avaliação do preço atual');
+  const mom = (await page.textContent('#momento')).replace(/\s+/g, ' ');
+  ok(/Comprar agora\?/.test(mom) && /mais barato que em 95 % dos últimos 10 dias/.test(mom) && /Histórico curto \(10 dias\)/.test(mom) && /Bom preço até/.test(hist),
+    'comprar agora ou esperar: ' + mom);
   ok((await page.$$('#graf circle')).length === 10, 'gráfico com um ponto por dia');
   await page.hover('#graf', { position: { x: 300, y: 80 } });
   ok(await page.$eval('#graf-tip', e => e.classList.contains('on') && /Loja A/.test(e.textContent)), 'dica do gráfico ao tocar/passar o dedo');
@@ -234,8 +247,44 @@ const um = (lista, f) => lista.find(f) || {};
   await page.fill('#p-prot', '29');
   ok(/97%/.test(await page.textContent('#p-pct')) && /confira/.test(await page.textContent('#p-pct')), 'aviso de % de proteína fora de 50–95 %');
   await page.screenshot({ path: SHOTS + '/09-produto.png', fullPage: true });
+  // proteína do laudo: grava na planilha e entra no ranking
+  await page.goto(B + '#/editar-produto/P1');
+  await page.fill('#p-laudo', '24');
+  ok(/80%/.test(await page.textContent('#p-pct')), '% de proteína real usa o laudo ao digitar');
+  await page.fill('#p-laudo-fonte', 'Lab X');
+  await page.click('[data-a=salvarProduto]');
+  await filaVazia();
+  const p1 = um(linhas('Produtos'), p => p.produto_id === 'P1');
+  ok(p1.proteina_laudo_g === 24 && p1.laudo_fonte === 'Lab X', 'laudo gravado na planilha');
+  await page.goto(B + '#/');
+  rk = await textos('.rk');
+  const rIso = rk.find(x => /IsoWhey/.test(x)) || '';
+  ok(/80% proteína \(laudo\)/.test(rIso) && /proteína laudo/.test(rIso), 'ranking usa a proteína do laudo: ' + rIso.slice(0, 110));
+  // evitar lactose
+  await page.goto(B + '#/config');
+  await page.selectOption('#r-lact', 'sim');
+  await page.click('[data-a=salvarConfigApp]');
+  await filaVazia();
+  await page.goto(B + '#/');
+  ok((await page.$$('.rk')).length === 1 && /IsoWhey/.test(await page.textContent('.rk')) && gs.lerConfig_().evitar_lactose === 'sim', 'evitar lactose deixa só o isolado');
+  await page.goto(B + '#/config');
+  await page.selectOption('#r-lact', 'nao');
+  await page.click('[data-a=salvarConfigApp]');
+
+  // produtos agrupados por marca, fechados por padrão
   await page.goto(B + '#/produtos');
+  const grupos = await page.$$('[data-grupo]');
+  ok(grupos.length === 4 && (await page.$$('.grupo-corpo[hidden]')).length === 4 && !(await page.isVisible('text=IsoWhey')), 'marcas fechadas por padrão');
   await page.screenshot({ path: SHOTS + '/10-produtos.png', fullPage: true });
+  await page.click('[data-a=toggleMarca][data-m="Max"]');
+  ok(await page.isVisible('text=IsoWhey') && (await page.$$('.grupo-corpo[hidden]')).length === 3, 'tocar na marca abre a lista');
+  await page.screenshot({ path: SHOTS + '/10b-produtos-aberto.png', fullPage: true });
+  await page.click('[data-a=toggleMarca][data-m="Max"]');
+  ok(!(await page.isVisible('text=IsoWhey')), 'tocar de novo fecha');
+  await page.fill('#busca', 'pure');
+  ok(await page.isVisible('text=Pure Whey') && (await page.$$eval('[data-grupo]', gs => gs.filter(g => g.style.display !== 'none').length)) === 1, 'busca abre só a marca com resultado');
+  await page.fill('#busca', '');
+  ok((await page.$$('.grupo-corpo[hidden]')).length === 4, 'limpar a busca volta a fechar');
   await page.goto(B + '#/lojas');
   await page.screenshot({ path: SHOTS + '/11-lojas.png', fullPage: true });
 

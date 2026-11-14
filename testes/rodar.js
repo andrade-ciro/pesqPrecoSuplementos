@@ -58,6 +58,11 @@ const fx = n => fs.readFileSync(path.join(__dirname, 'fixtures', n), 'utf8');
     p.peso_g === 1800 && p.marca === "Marca 'Y'" && p.disponivel, p);
   p = gs.extrairDe_('html', fx('meta-oferta.html').replace('in stock', 'out of stock'), '');
   t('metatags: fora de estoque', p.disponivel === false, p);
+  const rel = fx('jsonld-relacionados.html'), pagina = 'https://loja-exemplo.com/produtos/whey-concentrado-pote-900g/';
+  t('JSON-LD só com produtos relacionados não grava o preço de outro produto', gs.extrairDe_('html', rel, '', pagina) === null);
+  p = gs.extrairDe_('html', rel.replace('<!--PRODUTO-->', '<script type="application/ld+json">{"@type":"Product","name":"Whey Protein Concentrado - Pote 900g",' +
+    '"offers":{"@type":"Offer","url":"https://www.loja-exemplo.com/produtos/whey-concentrado-pote-900g?utm=x","price":"289.90","availability":"InStock"}}</script>'), '', pagina);
+  t('JSON-LD com o produto da página entre relacionados: escolhe o da página', p && p.preco === 289.9 && p.nome === 'Whey Protein Concentrado - Pote 900g', p);
   t('página sem preço → null', gs.extrairDe_('html', '<html><title>Whey</title></html>', '') === null);
 
   let pl = gs.planoDeColeta_('https://www.loja.com.br/iso-whey/p?skuId=62', '');
@@ -191,7 +196,7 @@ const fx = n => fs.readFileSync(path.join(__dirname, 'fixtures', n), 'utf8');
   const get = p => JSON.parse(gs.doGet({ parameter: p }).getContent());
   const post = corpo => JSON.parse(gs.doPost({ postData: { contents: typeof corpo === 'string' ? corpo : JSON.stringify(corpo) } }).getContent());
   t('API: token inválido é recusado', get({ token: 'x', acao: 'ping' }).erro === 'Token inválido' && post({ token: 'x', ops: [] }).ok === false);
-  t('API: ping', get({ token: tok, acao: 'ping' }).versao === '1.0.0');
+  t('API: ping', get({ token: tok, acao: 'ping' }).versao === '1.1.0');
   let e = get({ token: tok, acao: 'extrair', url: URL_VTEX + '?skuId=63' });
   t('API: extrair devolve a prévia com os sabores', e.ok && e.previa.sku === '63' && e.previa.skus.length === 3 && e.previa.adaptador === 'vtex' && e.previa.host === 'https://www.loja-a.com.br', e);
   bloqueada = true;
@@ -230,6 +235,38 @@ const fx = n => fs.readFileSync(path.join(__dirname, 'fixtures', n), 'utf8');
   ctxNp.ScriptApp.requireAllScopes = () => { throw new Error('Autorização necessária para executar este script'); };
   t('permissão negada: a coleta para sem contar falha nem pausar links', lanca(() => np.gs.coletar_({}, 60000), /Autorização necessária/) &&
     !np.linhas('Monitores')[0].falhas_seguidas && np.fetches.length === 0 && !np.linhas('ColetaLog').length);
+}
+
+// ---------------------------------------------------------------- planilha de versão anterior
+{
+  const G = criarGas();
+  G.gs.setup();
+  // Cabeçalho de antes da v1.1, sem as colunas do laudo
+  G.abas.Produtos.rows[0] = G.abas.Produtos.rows[0].filter(c => c !== 'proteina_laudo_g' && c !== 'laudo_fonte');
+  G.gs.aplicarOps_([{ op: 'upsert', aba: 'Produtos', id: 'P9', dados: { nome: 'X', proteina_laudo_g: 18, laudo_fonte: 'Lab Y' } }]);
+  const p = G.linhas('Produtos').find(x => x.produto_id === 'P9');
+  t('coluna nova (laudo) é criada sozinha numa planilha antiga, sem rodar setup', p && p.proteina_laudo_g === 18 && p.laudo_fonte === 'Lab Y' &&
+    G.abas.Produtos.rows[0].filter(c => c === 'laudo_fonte').length === 1, p);
+}
+
+// ---------------------------------------------------------------- catálogo inicial (apps-script/CatalogoInicial.gs)
+{
+  const G = criarGas();
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'CatalogoInicial.gs'), 'utf8'), G.ctx, { filename: 'CatalogoInicial.gs' });
+  G.gs.setup();
+  G.gs.seedExemplo();
+  const conta = () => ['Lojas', 'Produtos', 'Monitores'].map(a => G.linhas(a).length).join('/');
+  const antes = conta();
+  G.gs.carregarCatalogoInicial();
+  const depois = conta();
+  G.gs.carregarCatalogoInicial();
+  const cat = vm.runInContext('CATALOGO_INICIAL', G.ctx);
+  const nLinks = cat.reduce((a, c) => a + c.links.length, 0);
+  const lojas = new Set(G.linhas('Lojas').map(l => l.loja_id)), prods = new Set(G.linhas('Produtos').map(p => p.produto_id));
+  t('catálogo inicial: 10 produtos e ' + nLinks + ' links, reaproveitando as lojas e o produto do exemplo', cat.length === 10 &&
+    depois === `${4 + 17 - 3}/${3 + 10 - 1}/${3 + nLinks - 1}`, { antes, depois });
+  t('catálogo inicial: rodar de novo não duplica', conta() === depois, conta());
+  t('catálogo inicial: todo link aponta para loja e produto existentes', G.linhas('Monitores').every(m => lojas.has(m.loja_id) && prods.has(m.produto_id)));
 }
 
 let falhas = 0;

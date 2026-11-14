@@ -33,10 +33,16 @@ testes/fixtures/      páginas e respostas de exemplo de lojas VTEX, Shopify, JS
 
 ## Uso
 
-- **Ranking (início):** produtos ordenados pelo custo efetivo do kg de proteína, com a melhor loja de cada um. Filtros de tipo, marca, loja, janela (24 h, 7 dias, 30 dias, tudo) e esgotados. ↗ abre a oferta na loja. Os produtos abaixo do preço-alvo aparecem no topo e com a borda verde.
+- **Ranking (início):** produtos ordenados pelo custo efetivo do kg de proteína real, com a melhor loja de cada um. Filtros de tipo, marca, loja, janela (24 h, 7 dias, 30 dias, tudo) e esgotados. ↗ abre a oferta na loja. Os produtos abaixo do preço-alvo aparecem no topo e com a borda verde.
+  - **Melhor compra agora:** o 1º do ranking, quanto ele é mais barato que o 2º, se o preço dele está bom hoje e se algum produto já esteve bem mais barato nos últimos 90 dias.
+  - **Comparativo:** gráfico de linhas com o R$/kg de proteína de cada produto no melhor preço de cada dia (30, 90 ou 180 dias). Os 5 melhores de hoje ficam coloridos e os demais em cinza. Mais baixo é melhor.
+  - **Momento de compra** (etiqueta em cada produto): *bom momento* quando o preço de hoje está entre os 25 % dias mais baratos dos últimos 90; *caro agora* quando está entre os 35 % mais caros e mais de 3 % acima da mediana; senão *preço normal*. Com menos de 14 dias de coleta aparece *histórico curto*.
+- **Proteína real:** o R$/kg usa a proteína do rótulo. Se um laudo de laboratório mediu outro valor, informe-o no produto em *Proteína/dose no laudo*, com a fonte: o app passa a usar o valor medido e mostra o selo *laudo*. Isolado e concentrado não ganham peso extra: por grama de proteína, os estudos não mostram diferença de ganho muscular. O isolado vale a pena quando entrega proteína mais barata por kg, e o R$/kg já mede isso.
+- **Evitar lactose (Config):** deixa só isolados e hidrolisados no ranking e no comparativo.
+- **Produtos:** agrupados por marca e fechados; toque na marca para abrir. A busca abre só as marcas com resultado.
 - **Monitorar um link (＋):** cole o link da oferta e toque em *Ler oferta*. O robô traz nome, marca, preço, sabores e o peso tirado do título. Escolha o sabor, vincule a um produto (ou crie um com os campos já preenchidos, conferindo dose e proteína no rótulo) e salve. A leitura já vira a cotação de hoje.
 - **Cotação manual (＋):** para loja física, Mercado Livre, Amazon ou outra loja que bloqueia o robô. Frete e desconto em branco usam as regras da loja.
-- **Histórico (toque num produto):** melhor preço agora, R$/kg de proteína e por dose, menor preço já visto, mediana de 90 dias com a avaliação do preço atual, gráfico por loja e lista de cotações.
+- **Histórico (toque num produto):** melhor preço agora, R$/kg de proteína e por dose, menor preço já visto, "bom preço até" (o nível dos 25 % dias mais baratos), o cartão *Comprar agora?* com a explicação e a posição no ranking, gráfico por loja e lista de cotações. No histórico diário, a última cotação de uma loja vale por até 7 dias.
 - **Robô:** estado de cada link (ok, esgotado, erro ou pausado), último preço e último erro. *Coletar agora* num link ou em todos. Um link com 5 falhas seguidas é pausado e você recebe um e-mail. Para reativar, abra o link e marque *Ativo*.
 - **Lojas:** regras de custo por loja: desconto PIX/à vista, cupom, frete fixo e frete grátis acima de um valor.
 - **Alertas por e-mail:** quando o robô vê um custo efetivo abaixo do preço-alvo, manda um e-mail para a conta dona da planilha. Ele não repete enquanto o preço segue abaixo e volta a avisar depois que o preço sobe e cai de novo.

@@ -19,10 +19,11 @@
  * O robô (coletarTodos) roda pelo gatilho de tempo e grava uma cotação por monitor por dia (RP-11).
  */
 
-const VERSAO = '1.0.0';
+const VERSAO = '1.1.0';
 
 const ABAS = {
-  Produtos: ['produto_id', 'marca', 'nome', 'tipo', 'sabor', 'peso_g', 'dose_g', 'proteina_dose_g', 'preco_alvo', 'ativo', 'obs'],
+  Produtos: ['produto_id', 'marca', 'nome', 'tipo', 'sabor', 'peso_g', 'dose_g', 'proteina_dose_g', 'preco_alvo', 'ativo', 'obs',
+    'proteina_laudo_g', 'laudo_fonte'],
   Lojas: ['loja_id', 'nome', 'tipo', 'url', 'plataforma', 'frete_fixo', 'frete_gratis_acima', 'desconto_pix_pct', 'cupom', 'cupom_pct', 'ativo'],
   Monitores: ['monitor_id', 'produto_id', 'loja_id', 'url', 'sku', 'sku_nome', 'adaptador', 'ativo', 'ultima_coleta', 'ultimo_preco',
     'ultimo_status', 'ultimo_erro', 'falhas_seguidas', 'alerta_enviado'],
@@ -125,10 +126,17 @@ function aplicarOps_(ops) {
 function aplicarAba_(nome, ops) {
   const sh = aba_(nome);
   const lastRow = sh.getLastRow();
-  const lastCol = sh.getLastColumn();
-  const header = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
+  let lastCol = sh.getLastColumn();
+  let header = sh.getRange(1, 1, 1, lastCol).getValues()[0].map(String);
   const colId = header.indexOf(ABAS[nome][0]);
   if (colId < 0) throw new Error('Aba ' + nome + ' sem coluna ' + ABAS[nome][0] + ' (rode setup())');
+  // Colunas criadas numa versão nova (ex.: proteina_laudo_g) entram no fim do cabeçalho sem precisar rodar setup()
+  const faltam = ABAS[nome].filter(function (c) { return header.indexOf(c) < 0; });
+  if (faltam.length) {
+    sh.getRange(1, lastCol + 1, 1, faltam.length).setValues([faltam]);
+    header = header.concat(faltam);
+    lastCol += faltam.length;
+  }
   const dados = lastRow > 1 ? sh.getRange(2, 1, lastRow - 1, lastCol).getValues() : [];
 
   const indice = {}; // id → { nova: bool, i }
@@ -452,13 +460,31 @@ function disponibilidadeLd_(a) {
   return /InStock|InStoreOnly|LimitedAvailability|OnlineOnly|PreOrder|PreSale/i.test(a) ? true : null;
 }
 
-/** JSON-LD schema.org Product / ProductGroup com Offer ou AggregateOffer. */
-function extrairJsonLd_(html, sku) {
+/** Link sem protocolo, www, query, âncora e barra final, para comparar o produto com a página. */
+function chaveUrl_(u) {
+  return String(u || '').toLowerCase().replace(/^https?:\/\/(www\.)?/, '').replace(/[?#].*$/, '').replace(/\/+$/, '');
+}
+
+/**
+ * JSON-LD schema.org Product / ProductGroup com Offer ou AggregateOffer.
+ * Com urlPagina: produtos que declaram outro link (vitrines de relacionados) são ignorados,
+ * para não gravar o preço de outro produto.
+ */
+function extrairJsonLd_(html, sku, urlPagina) {
   const re = /<script[^>]*type=["']application\/ld\+json["'][^>]*>([\s\S]*?)<\/script>/gi;
-  const produtos = [];
+  let produtos = [];
   let m;
   while ((m = re.exec(html))) {
     try { percorrerLd_(JSON.parse(m[1].trim()), produtos); } catch (e) { /* bloco inválido: ignora */ }
+  }
+  if (urlPagina) {
+    const pagina = chaveUrl_(urlPagina);
+    produtos = produtos.filter(function (p) {
+      // Só url e o link da oferta: @id é identificador e às vezes aponta para outro site do grupo (ex.: Sam's → Carrefour)
+      const links = [p.url].concat([].concat(p.offers || []).map(function (o) { return o && o.url; }))
+        .filter(Boolean).map(chaveUrl_);
+      return !links.length || links.some(function (l) { return l === pagina || l.indexOf(pagina + '#') === 0; });
+    });
   }
   const skus = [];
   let nome = '', marca = '';
@@ -501,15 +527,15 @@ function extrairMeta_(html, sku) {
     [{ sku: sku || '', nome: '', preco: preco, preco_lista: null, disponivel: !/out.?of.?stock|oos|indispon|esgotad/i.test(disp) }], sku);
 }
 
-/** Aplica o adaptador ao texto baixado. 'html' tenta JSON-LD e depois metatags. */
-function extrairDe_(adaptador, texto, sku) {
+/** Aplica o adaptador ao texto baixado. 'html' tenta JSON-LD (só do produto da página) e depois metatags. */
+function extrairDe_(adaptador, texto, sku, urlPagina) {
   if (adaptador === 'vtex' || adaptador === 'shopify') {
     let j;
     try { j = JSON.parse(texto); } catch (e) { return null; }
     const p = adaptador === 'vtex' ? extrairVtex_(j, sku) : extrairShopify_(j, sku);
     return p && Object.assign(p, { adaptador: adaptador });
   }
-  const ld = extrairJsonLd_(texto, sku);
+  const ld = extrairJsonLd_(texto, sku, urlPagina);
   if (ld) return Object.assign(ld, { adaptador: 'jsonld' });
   const mt = extrairMeta_(texto, sku);
   return mt && Object.assign(mt, { adaptador: 'meta' });
@@ -553,7 +579,7 @@ function coletarUrl_(url, sku, adaptador) {
     http = r.getResponseCode();
     if (http === 403 || http === 429 || http === 503) { erro = 'Bloqueado pela loja (HTTP ' + http + ')'; continue; }
     if (http >= 400) { erro = 'HTTP ' + http; continue; }
-    const p = extrairDe_(t.adaptador, r.getContentText(), sku || t.sku); // erro de SKU sobe direto
+    const p = extrairDe_(t.adaptador, r.getContentText(), sku || t.sku, url); // erro de SKU sobe direto
     if (p && (p.preco !== null || !p.disponivel)) return Object.assign(p, { http: http });
   }
   const e = new Error(erro);
