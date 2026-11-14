@@ -1,10 +1,12 @@
 # App de Whey
 
-App pessoal para comparar preços de whey protein no celular. É um único `index.html` que grava numa planilha Google por meio de um Apps Script. O mesmo script tem um robô que revisita os links de oferta e grava o preço sozinho. Os requisitos estão em [App de Whey — Requisitos.md](App%20de%20Whey%20—%20Requisitos.md).
+App pessoal para comparar preços de whey protein e creatina no celular. É um único `index.html` que grava numa planilha Google por meio de um Apps Script. O mesmo script tem um robô que revisita os links de oferta e grava o preço sozinho. Os requisitos estão em [App de Whey — Requisitos.md](App%20de%20Whey%20—%20Requisitos.md).
 
 ```
 index.html            o app inteiro (HTML + CSS + JS, sem build)
 apps-script/Code.gs   back-end e robô de coleta: colar no editor do Apps Script da planilha
+apps-script/CatalogoInicial.gs   catálogo pronto de whey (10 marcas, 34 links): rodar carregarCatalogoInicial()
+apps-script/CatalogoCreatina.gs  catálogo pronto de creatina (19 produtos, 51 links): rodar carregarCatalogoCreatina()
 testes/rodar.js       testes do núcleo do app e do Code.gs numa planilha em memória (Node, sem dependências)
 testes/e2e.js         uso completo num navegador headless contra o Code.gs servido como Web App falso
 testes/gas-falso.js   ambiente falso do Apps Script (planilha, UrlFetchApp, e-mail, gatilhos)
@@ -33,6 +35,8 @@ testes/fixtures/      páginas e respostas de exemplo de lojas VTEX, Shopify, JS
 
 ## Uso
 
+- **Whey e Creatina:** os botões no topo do ranking trocam a categoria. Cada uma tem ranking, comparativo e métrica próprios: R$/kg de proteína no whey e R$/kg de creatina na creatina (na creatina pura, 3 g por dose de 3 g, é o R$/kg do pote). Na planilha, `proteina_dose_g` e `proteina_laudo_g` guardam o ativo por dose da categoria. Produtos antigos sem `categoria` contam como whey.
+- **Catálogos prontos:** crie no Apps Script um arquivo com o conteúdo de `CatalogoInicial.gs` ou `CatalogoCreatina.gs` e rode a função dele. Rodar de novo não duplica nada nem sobrescreve o que você editou no app (só preenche campos vazios e só cria links novos).
 - **Ranking (início):** produtos ordenados pelo custo efetivo do kg de proteína real, com a melhor loja de cada um. Filtros de tipo, marca, loja, janela (24 h, 7 dias, 30 dias, tudo) e esgotados. ↗ abre a oferta na loja. Os produtos abaixo do preço-alvo aparecem no topo e com a borda verde.
   - **Melhor compra agora:** o 1º do ranking, quanto ele é mais barato que o 2º, se o preço dele está bom hoje e se algum produto já esteve bem mais barato nos últimos 90 dias.
   - **Comparativo:** gráfico de linhas com o R$/kg de proteína de cada produto no melhor preço de cada dia (30, 90 ou 180 dias). Os 5 melhores de hoje ficam coloridos e os demais em cinza. Mais baixo é melhor.

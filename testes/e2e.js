@@ -46,6 +46,8 @@ const ops = [
   up('Cotacoes', 'C2B', { produto_id: 'P2', loja_id: 'LB', origem: 'manual', data: d(1), preco: 199.9, disponivel: true }),
   up('Cotacoes', 'C2A', { produto_id: 'P2', loja_id: 'LA', origem: 'manual', data: d(20), preco: 180, disponivel: true }),
   up('Cotacoes', 'C3B', { produto_id: 'P3', loja_id: 'LB', origem: 'manual', data: d(40), preco: 100, disponivel: true }),
+  up('Produtos', 'P4', { categoria: 'creatina', marca: 'Max', nome: 'Creatina 300 g', tipo: 'monohidratada', peso_g: 300, dose_g: 3, proteina_dose_g: 3, ativo: true }),
+  up('Cotacoes', 'C4A', { produto_id: 'P4', loja_id: 'LA', origem: 'manual', data: d(0), preco: 60, disponivel: true }),
 ];
 [340, 338, 335, 345, 330, 329, 331, 327, 328, 326.18].forEach((p, i) => {
   const n = 9 - i, dia = d(n);
@@ -98,7 +100,7 @@ const um = (lista, f) => lista.find(f) || {};
   await page.fill('#c-url', B + 'exec');
   await page.fill('#c-token', TOKEN);
   await page.click('[data-a=salvarCfg]');
-  await page.waitForFunction(() => JSON.parse(localStorage.getItem('whey.cache') || '{}').produtos?.length === 3);
+  await page.waitForFunction(() => JSON.parse(localStorage.getItem('whey.cache') || '{}').produtos?.length === 4);
   ok(true, 'bootstrap carregou produtos, lojas, monitores e cotações');
 
   // ranking (RP-16..RP-18, RP-21)
@@ -120,6 +122,16 @@ const um = (lista, f) => lista.find(f) || {};
   await page.mouse.move(5, 5);
   await page.locator('#comparativo').screenshot({ path: SHOTS + '/02b-comparativo.png' });
   ok(/histórico curto/.test(rk[1]), 'ranking marca o momento (histórico curto com 10 dias)');
+  ok(!rk.some(x => /Creatina/.test(x)), 'aba Whey não mostra creatina');
+  await page.click('[data-a=categoria][data-c=creatina]');
+  const rkC = await textos('.rk');
+  ok(rkC.length === 1 && /Max Creatina 300 g/.test(rkC[0]) && /180,00 \/kg creatina/.test(rkC[0]) && /100% creatina/.test(rkC[0]) &&
+    /R\$ por kg de creatina/.test(await page.textContent('#comparativo')) && /\/kg de creatina/.test(await page.textContent('#lider')), 'aba Creatina: ranking em R$/kg de creatina: ' + rkC.join(' | ').slice(0, 120));
+  await page.screenshot({ path: SHOTS + '/02c-creatina.png', fullPage: true });
+  await page.goto(B + '#/produto/P4');
+  ok(/Por kg de creatina\s*R\$ 180,00/.test(await page.textContent('#app')), 'produto de creatina fala em kg de creatina');
+  await page.goto(B + '#/');
+  await page.click('[data-a=categoria][data-c=whey]');
   await page.screenshot({ path: SHOTS + '/02-ranking.png', fullPage: true });
   await page.click('[data-a=janela][data-d="30"]');
   rk = await textos('.rk');
@@ -247,6 +259,14 @@ const um = (lista, f) => lista.find(f) || {};
   await page.fill('#p-prot', '29');
   ok(/97%/.test(await page.textContent('#p-pct')) && /confira/.test(await page.textContent('#p-pct')), 'aviso de % de proteína fora de 50–95 %');
   await page.screenshot({ path: SHOTS + '/09-produto.png', fullPage: true });
+  // editor: trocar a categoria troca tipos e rótulos
+  await page.goto(B + '#/editar-produto/novo');
+  await page.selectOption('#p-cat', 'creatina');
+  ok(await page.textContent('#p-l-prot') === 'Creatina/dose (g)' && (await page.$$eval('#p-tipo option', os => os.map(o => o.textContent))).join() === 'Monohidratada,Creapure,Outra forma',
+    'editor: categoria creatina troca tipos e rótulos');
+  await page.fill('#p-dose', '3'); await page.fill('#p-prot', '3');
+  ok(/100%/.test(await page.textContent('#p-pct')) && !/confira/.test(await page.textContent('#p-pct')), 'creatina pura: 100 % sem aviso');
+
   // proteína do laudo: grava na planilha e entra no ranking
   await page.goto(B + '#/editar-produto/P1');
   await page.fill('#p-laudo', '24');
@@ -274,17 +294,18 @@ const um = (lista, f) => lista.find(f) || {};
   // produtos agrupados por marca, fechados por padrão
   await page.goto(B + '#/produtos');
   const grupos = await page.$$('[data-grupo]');
-  ok(grupos.length === 4 && (await page.$$('.grupo-corpo[hidden]')).length === 4 && !(await page.isVisible('text=IsoWhey')), 'marcas fechadas por padrão');
+  ok(grupos.length === 5 && (await page.$$('.grupo-corpo[hidden]')).length === 5 && !(await page.isVisible('text=IsoWhey')) &&
+    (await textos('h2[data-cat]')).join() === 'Whey,Creatina', 'marcas fechadas por padrão, separadas por categoria');
   await page.screenshot({ path: SHOTS + '/10-produtos.png', fullPage: true });
-  await page.click('[data-a=toggleMarca][data-m="Max"]');
-  ok(await page.isVisible('text=IsoWhey') && (await page.$$('.grupo-corpo[hidden]')).length === 3, 'tocar na marca abre a lista');
+  await page.click('[data-a=toggleMarca][data-m="whey|Max"]');
+  ok(await page.isVisible('text=IsoWhey') && (await page.$$('.grupo-corpo[hidden]')).length === 4, 'tocar na marca abre a lista');
   await page.screenshot({ path: SHOTS + '/10b-produtos-aberto.png', fullPage: true });
-  await page.click('[data-a=toggleMarca][data-m="Max"]');
+  await page.click('[data-a=toggleMarca][data-m="whey|Max"]');
   ok(!(await page.isVisible('text=IsoWhey')), 'tocar de novo fecha');
   await page.fill('#busca', 'pure');
   ok(await page.isVisible('text=Pure Whey') && (await page.$$eval('[data-grupo]', gs => gs.filter(g => g.style.display !== 'none').length)) === 1, 'busca abre só a marca com resultado');
   await page.fill('#busca', '');
-  ok((await page.$$('.grupo-corpo[hidden]')).length === 4, 'limpar a busca volta a fechar');
+  ok((await page.$$('.grupo-corpo[hidden]')).length === 5, 'limpar a busca volta a fechar');
   await page.goto(B + '#/lojas');
   await page.screenshot({ path: SHOTS + '/11-lojas.png', fullPage: true });
 

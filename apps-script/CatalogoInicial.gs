@@ -5,8 +5,8 @@
  *
  * Como usar: no editor do Apps Script, crie o arquivo (Arquivos > + > Script) com o nome CatalogoInicial,
  * cole este conteúdo, salve e rode carregarCatalogoInicial(). Pode rodar de novo: não duplica nada.
- * Lojas já cadastradas são reaproveitadas pelo site; produtos, pela marca e pelo nome (sem o peso);
- * links já monitorados, pelo endereço.
+ * Precisa do Code.gs 1.2.0 ou mais novo (carregarCatalogo_). Lojas já cadastradas são reaproveitadas pelo site;
+ * produtos, pela marca, nome e peso; links já monitorados, pelo endereço. Não sobrescreve o que você editou.
  *
  * Proteína por porção: valores de fontes públicas (rótulo, lojas), anotados em obs. Confira no rótulo.
  */
@@ -109,41 +109,5 @@ const CATALOGO_INICIAL = [
 ];
 
 function carregarCatalogoInicial() {
-  const semPeso = function (s) {
-    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
-      .replace(/\b\d+(?:[.,]\d+)?\s*(kg|g)\b/g, '').replace(/[^a-z0-9%]+/g, ' ').trim();
-  };
-  const host = function (u) { return (String(u || '').match(/^https?:\/\/(?:www\.)?([^\/?#]+)/i) || [])[1] || ''; };
-  const lojas = lerAba_('Lojas'), produtos = lerAba_('Produtos'), monitores = lerAba_('Monitores');
-  const ops = [];
-  const lojaPorHost = {};
-  lojas.forEach(function (l) { if (host(l.url)) lojaPorHost[host(l.url)] = l.loja_id; });
-  Object.keys(LOJAS_CATALOGO).forEach(function (h) {
-    if (lojaPorHost[host('https://' + h)]) return;
-    const id = 'L-' + host('https://' + h).split('.')[0];
-    lojaPorHost[host('https://' + h)] = id;
-    ops.push({ op: 'upsert', aba: 'Lojas', id: id, dados: { nome: LOJAS_CATALOGO[h][0], tipo: 'online', url: 'https://' + h,
-      plataforma: LOJAS_CATALOGO[h][1], ativo: true } });
-  });
-  const monPorUrl = {};
-  monitores.forEach(function (m) { monPorUrl[String(m.url).replace(/[?#].*$/, '')] = m.monitor_id; });
-  let novosProd = 0, novosMon = 0;
-  CATALOGO_INICIAL.forEach(function (c) {
-    const existente = produtos.filter(function (p) {
-      return semPeso(p.marca) === semPeso(c.marca) && semPeso(p.nome) === semPeso(c.nome);
-    })[0];
-    const pid = existente ? existente.produto_id : 'P-' + semPeso(c.marca + ' ' + c.nome).replace(/ /g, '-');
-    if (!existente) novosProd++;
-    ops.push({ op: 'upsert', aba: 'Produtos', id: pid, dados: { marca: c.marca, nome: c.nome, tipo: c.tipo, sabor: c.sabor,
-      peso_g: c.peso_g, dose_g: c.dose_g, proteina_dose_g: c.proteina_dose_g, ativo: true, obs: c.obs } });
-    c.links.forEach(function (l) {
-      const mid = monPorUrl[l[1]] || 'M-' + pid.slice(2) + '-' + host(l[1]).split('.')[0];
-      if (!monPorUrl[l[1]]) novosMon++;
-      ops.push({ op: 'upsert', aba: 'Monitores', id: mid, dados: { produto_id: pid, loja_id: lojaPorHost[host(l[1])], url: l[1],
-        sku: l[2], sku_nome: l[3], adaptador: l[4], ativo: true } });
-    });
-  });
-  aplicarOps_(ops);
-  Logger.log('Catálogo inicial carregado: ' + novosProd + ' produtos novos, ' + novosMon + ' links novos (' + ops.length + ' linhas gravadas). ' +
-    'Agora rode coletarTodos (ou toque em "Coletar todos agora" no app) para buscar os preços.');
+  return carregarCatalogo_(LOJAS_CATALOGO, CATALOGO_INICIAL.map(function (c) { return Object.assign({ categoria: 'whey' }, c); }), 'Catálogo de whey');
 }

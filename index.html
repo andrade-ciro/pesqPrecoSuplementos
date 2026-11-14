@@ -105,15 +105,28 @@ b.clamp{display:block}
 <div id="toast"></div>
 <script>
 'use strict';
-const VERSAO = '1.1.0';
+const VERSAO = '1.2.0';
 
 // <núcleo> — funções puras, sem DOM; testadas por ?test e por testes/rodar.js
 const DEF = { janela_dias: 7, intervalo_coleta_h: 6, historico_dias: 180, falhas_para_pausar: 5 };
-const TIPOS = { concentrado: 'Concentrado', isolado: 'Isolado', hidrolisado: 'Hidrolisado', blend: 'Blend' };
+/**
+ * Categorias de produto. Cada uma tem a sua métrica (R$/kg do ativo: proteína ou creatina), os seus tipos
+ * e a faixa plausível do % de ativo (RP-02). As colunas proteina_dose_g e proteina_laudo_g guardam o ativo por dose.
+ */
+const CATEGORIAS = {
+  whey: { nome: 'Whey', ativo: 'proteína', faixa: [0.5, 0.95], dose: 30, porDose: 24,
+    tipos: { concentrado: 'Concentrado', isolado: 'Isolado', hidrolisado: 'Hidrolisado', blend: 'Blend' } },
+  creatina: { nome: 'Creatina', ativo: 'creatina', faixa: [0.5, 1], dose: 3, porDose: 3,
+    tipos: { monohidratada: 'Monohidratada', creapure: 'Creapure', outra: 'Outra forma' } },
+};
+const TIPOS = Object.assign({}, ...Object.values(CATEGORIAS).map(c => c.tipos));
+/** Categoria do produto; sem a coluna (planilhas antigas), deduz pelo tipo e cai em whey. */
+const catDe = p => p && CATEGORIAS[p.categoria] ? p.categoria : (Object.keys(CATEGORIAS).find(k => p && CATEGORIAS[k].tipos[p.tipo]) || 'whey');
+const ativoDe = p => CATEGORIAS[catDe(p)].ativo;
 const COM_LACTOSE = ['concentrado', 'blend']; // isolado e hidrolisado têm pouca lactose
 const VALIDADE_DIAS = 7; // por quantos dias a última cotação de uma loja vale no histórico diário
 const COLS = {
-  Produtos: ['marca', 'nome', 'tipo', 'sabor', 'peso_g', 'dose_g', 'proteina_dose_g', 'preco_alvo', 'ativo', 'obs', 'proteina_laudo_g', 'laudo_fonte'],
+  Produtos: ['marca', 'nome', 'tipo', 'sabor', 'peso_g', 'dose_g', 'proteina_dose_g', 'preco_alvo', 'ativo', 'obs', 'proteina_laudo_g', 'laudo_fonte', 'categoria'],
   Lojas: ['nome', 'tipo', 'url', 'plataforma', 'frete_fixo', 'frete_gratis_acima', 'desconto_pix_pct', 'cupom', 'cupom_pct', 'ativo'],
   Monitores: ['produto_id', 'loja_id', 'url', 'sku', 'sku_nome', 'adaptador', 'ativo'],
   Cotacoes: ['produto_id', 'loja_id', 'monitor_id', 'origem', 'data', 'preco', 'preco_min_dia', 'preco_lista', 'frete', 'desconto',
@@ -192,8 +205,8 @@ function custoEfetivo(c, loja) {
 }
 
 /**
- * % de proteína, R$/kg de proteína e R$ por dose de um produto a um custo.
- * Proteína real: a medida em laudo (proteina_laudo_g), se houver; senão a do rótulo (verificado = false).
+ * % de ativo (proteína ou creatina), R$/kg do ativo e R$ por dose de um produto a um custo.
+ * Ativo real: o medido em laudo (proteina_laudo_g), se houver; senão o do rótulo (verificado = false).
  */
 function metricas(prod, custo) {
   const peso = num(prod.peso_g), dose = num(prod.dose_g), rotulo = num(prod.proteina_dose_g), laudo = num(prod.proteina_laudo_g);
@@ -207,7 +220,7 @@ function metricas(prod, custo) {
     porDose: custo != null && peso > 0 && dose > 0 ? arred(custo / (peso / dose)) : null,
   };
 }
-const pctSuspeita = p => p != null && (p < 0.5 || p > 0.95); // RP-02
+const pctSuspeita = (p, cat = 'whey') => p != null && (p < CATEGORIAS[cat].faixa[0] || p > CATEGORIAS[cat].faixa[1] + 1e-9); // RP-02
 
 function mediana(v) {
   const a = v.filter(x => x != null).sort((x, y) => x - y);
@@ -226,10 +239,10 @@ const maisRecente = (a, b) => !a || Date.parse(b.data) > Date.parse(a.data) ||
 /**
  * Ranking de custo-benefício (RP-16..RP-18). Para cada produto ativo, a cotação mais recente de cada loja
  * dentro da janela; o produto entra com a melhor loja. Sem dados nutricionais vai para o fim.
- * f: { tipo, marca, loja, janela_dias (0 = tudo), soDisponiveis, semLactose }
+ * f: { categoria, tipo, marca, loja, janela_dias (0 = tudo), soDisponiveis, semLactose }
  * → [{ produto, ofertas: [{ cot, loja, ce, porKg, porDose, pct }], melhor, abaixoAlvo }]
  */
-const passaFiltro = (p, f) => bool(p.ativo, true) && (!f.tipo || p.tipo === f.tipo) && (!f.marca || p.marca === f.marca) &&
+const passaFiltro = (p, f) => bool(p.ativo, true) && (!f.categoria || catDe(p) === f.categoria) && (!f.tipo || p.tipo === f.tipo) && (!f.marca || p.marca === f.marca) &&
   !(f.semLactose && COM_LACTOSE.includes(p.tipo));
 function montarRanking(dados, f, agoraMs) {
   f = f || {};
@@ -359,7 +372,7 @@ function decisaoCompra(serie) {
 }
 
 /**
- * Séries do gráfico comparativo: R$/kg de proteína real no melhor preço de cada dia, por produto que passa no filtro.
+ * Séries do gráfico comparativo: R$/kg do ativo real no melhor preço de cada dia, por produto que passa no filtro.
  * → [{ produto, pontos: [{ k, t, custo, porKg, loja_id }], atual (R$/kg hoje ou null), minimo: { porKg, k } | null }]
  */
 function serieComparativa(dados, f, dias, agoraMs) {
@@ -392,6 +405,19 @@ function enfileirar(fila, op, emEnvio = new Set()) {
   }
   fila.push(op);
   return fila;
+}
+/** Explicação do momento de compra (saída de decisaoCompra) em uma ou duas frases. */
+function fraseMomento(d) {
+  if (!d || d.estado === 'sem-preco') return 'Sem preço disponível hoje.';
+  if (d.dias < 3) return `Ainda sem histórico para comparar (${d.dias} dia${d.dias === 1 ? '' : 's'} de coleta): a indicação de comprar ou esperar aparece com o tempo e fica confiável a partir de 14 dias.`;
+  const pct = Math.round(d.posicao * 100);
+  const ultima = d.ultimaVezBom != null ? ` (última vez ${d.ultimaVezBom === 1 ? 'ontem' : `há ${d.ultimaVezBom} dias`})` : '';
+  let f;
+  if (d.estado === 'comprar') f = `Bom momento: hoje está mais barato que em ${pct} % dos últimos ${d.dias} dias.`;
+  else if (d.estado === 'esperar') f = `Caro agora: mais caro que em ${100 - pct} % dos últimos ${d.dias} dias. Se puder esperar, costuma chegar a ${fmtR(d.bom)}${ultima}.`;
+  else f = `Preço comum: mais barato que em ${pct} % dos últimos ${d.dias} dias. Um bom preço para este produto é até ${fmtR(d.bom)}${ultima}.`;
+  if (d.historicoCurto) f += ` Histórico curto (${d.dias} dia${d.dias === 1 ? '' : 's'}): a indicação fica confiável a partir de 14 dias de coleta.`;
+  return f;
 }
 // </núcleo>
 
@@ -435,7 +461,7 @@ const S = {
   cfg: LS.get('cfg', { url: '', token: '' }),
   cache: Object.assign({}, CACHE_VAZIO, LS.get('cache', {})),
   fila: LS.get('fila', []),
-  filtros: Object.assign({ tipo: '', marca: '', loja: '', janela_dias: null, soDisponiveis: true, dias_graf: 30 }, LS.get('filtros', {})),
+  filtros: Object.assign({ categoria: 'whey', tipo: '', marca: '', loja: '', janela_dias: null, soDisponiveis: true, dias_graf: 30 }, LS.get('filtros', {})),
   sync: { ocupado: false, erro: null, espera: 0, timer: null, emEnvio: new Set(), ultimo: LS.get('ultimoSync', 0) },
   ui: { modal: null, verArquivados: false, nm: null, coletando: false, grafs: {}, marcasAbertas: new Set() },
 };
@@ -462,7 +488,7 @@ const prodAtivos = () => S.cache.produtos.filter(p => bool(p.ativo, true)).sort(
 const lojasOrd = () => S.cache.lojas.slice().sort((a, b) => String(a.nome).localeCompare(String(b.nome), 'pt-BR'));
 function descProd(p) {
   const m = metricas(p, null);
-  return [TIPOS[p.tipo] || p.tipo, p.sabor, fmtPeso(num(p.peso_g)), m.pct != null ? fmtPct(m.pct) + ' proteína' + (m.verificado ? ' (laudo)' : '') : ''].filter(Boolean).join(' · ');
+  return [TIPOS[p.tipo] || p.tipo, p.sabor, fmtPeso(num(p.peso_g)), m.pct != null ? fmtPct(m.pct) + ' ' + ativoDe(p) + (m.verificado ? ' (laudo)' : '') : ''].filter(Boolean).join(' · ');
 }
 function upsertLocal(lista, chave, obj) {
   const arr = S.cache[lista];
@@ -658,26 +684,16 @@ const TAG_MOMENTO = {
   esperar: '<span class="tag warn">▲ caro agora</span>',
 };
 const tagMomento = d => !d || d.estado === 'sem-preco' ? '' : d.historicoCurto ? '<span class="tag">histórico curto</span>' : TAG_MOMENTO[d.estado];
-function fraseMomento(d) {
-  if (!d || d.estado === 'sem-preco') return 'Sem preço disponível hoje.';
-  const pct = Math.round(d.posicao * 100);
-  const ultima = d.ultimaVezBom != null ? ` (última vez ${d.ultimaVezBom === 1 ? 'ontem' : `há ${d.ultimaVezBom} dias`})` : '';
-  let f;
-  if (d.estado === 'comprar') f = `Bom momento: hoje está mais barato que em ${pct} % dos últimos ${d.dias} dias.`;
-  else if (d.estado === 'esperar') f = `Caro agora: mais caro que em ${100 - pct} % dos últimos ${d.dias} dias. Se puder esperar, costuma chegar a ${fmtR(d.bom)}${ultima}.`;
-  else f = `Preço comum: mais barato que em ${pct} % dos últimos ${d.dias} dias. Um bom preço para este produto é até ${fmtR(d.bom)}${ultima}.`;
-  if (d.historicoCurto) f += ` Histórico curto (${d.dias} dia${d.dias === 1 ? '' : 's'}): a indicação fica confiável a partir de 14 dias de coleta.`;
-  return f;
-}
 
 // ---- ranking (RP-16..RP-18, RP-21)
 function telaInicio() {
-  let h = topo('Whey', `<button class="pri" data-a="modal" data-t="novo" aria-label="Adicionar">＋</button>`);
+  let h = topo((CATEGORIAS[S.filtros.categoria] || CATEGORIAS.whey).nome, `<button class="pri" data-a="modal" data-t="novo" aria-label="Adicionar">＋</button>`);
   if (!S.cfg.url) {
     h += `<div class="card"><b>Conecte sua planilha</b><p class="muted small">Informe a URL do Web App e o token para sincronizar. Sem isso o app funciona só no aparelho e o robô não coleta.</p>
       <button class="pri w100" data-a="ir" data-h="#/config">Configurar</button></div>`;
   }
   const agora = Date.now(), f = filtroAtual(), jan = f.janela_dias;
+  const cat = CATEGORIAS[f.categoria] ? f.categoria : 'whey', at = CATEGORIAS[cat].ativo;
   const rk = montarRanking(S.cache, f, agora);
   const alvos = montarRanking(S.cache, { janela_dias: jan }, agora).filter(r => r.abaixoAlvo);
   if (alvos.length) {
@@ -689,13 +705,15 @@ function telaInicio() {
   const problemas = S.cache.monitores.filter(m => m.ultimo_status === 'pausado' || m.ultimo_status === 'erro').length;
   if (problemas) h += `<a class="card row" href="#/monitores" style="color:inherit;text-decoration:none"><span class="tag err">robô</span><span class="grow small">${problemas} link${problemas > 1 ? 's' : ''} com erro ou pausado${problemas > 1 ? 's' : ''}</span><span>→</span></a>`;
 
-  const marcas = [...new Set(S.cache.produtos.map(p => p.marca).filter(Boolean))].sort();
+  const marcas = [...new Set(S.cache.produtos.filter(p => catDe(p) === cat).map(p => p.marca).filter(Boolean))].sort();
   const opt = (v, t, sel) => `<option value="${esc(v)}" ${v === sel ? 'selected' : ''}>${esc(t)}</option>`;
+  h += `<div class="chips mt" role="tablist">${Object.entries(CATEGORIAS).map(([k, c]) =>
+    `<button class="chip grow ${k === cat ? 'on' : ''}" data-a="categoria" data-c="${k}" role="tab" aria-selected="${k === cat}">${c.nome}</button>`).join('')}</div>`;
   h += `<div class="filtros mt"><div class="grid3">
-      <select id="f-tipo" aria-label="Tipo">${opt('', 'Tipo', f.tipo)}${Object.entries(TIPOS).map(([k, v]) => opt(k, v, f.tipo)).join('')}</select>
+      <select id="f-tipo" aria-label="Tipo">${opt('', 'Tipo', f.tipo)}${Object.entries(CATEGORIAS[cat].tipos).map(([k, v]) => opt(k, v, f.tipo)).join('')}</select>
       <select id="f-marca" aria-label="Marca">${opt('', 'Marca', f.marca)}${marcas.map(m => opt(m, m, f.marca)).join('')}</select>
       <select id="f-loja" aria-label="Loja">${opt('', 'Loja', f.loja)}${lojasOrd().map(l => opt(l.loja_id, l.nome, f.loja)).join('')}</select></div>
-    ${f.semLactose ? '<div class="muted small mt">Só isolados e hidrolisados: "evitar lactose" está ligado nas Configurações.</div>' : ''}</div>`;
+    ${f.semLactose && cat === 'whey' ? '<div class="muted small mt">Só isolados e hidrolisados: "evitar lactose" está ligado nas Configurações.</div>' : ''}</div>`;
 
   // Histórico diário de cada produto: decide o momento (últimos 90 dias) e desenha o comparativo
   const diasGraf = S.filtros.dias_graf || 30;
@@ -708,29 +726,29 @@ function telaInicio() {
     const segundo = rk.find(r => r !== lider && r.melhor.ce && r.melhor.porKg != null);
     const d = decisao[lider.produto.produto_id];
     const vantagem = segundo ? Math.round((1 - lider.melhor.porKg / segundo.melhor.porKg) * 100) : null;
-    // Algum produto já esteve bem mais barato por kg de proteína do que o líder está hoje?
+    // Algum produto já esteve bem mais barato por kg do ativo do que o líder está hoje?
     const melhorJa = comp.filter(sc => sc.minimo && sc.minimo.porKg < lider.melhor.porKg * 0.95)
       .sort((a, b) => a.minimo.porKg - b.minimo.porKg)[0];
     const quando = k => k === 0 ? 'hoje' : k === 1 ? 'ontem' : `há ${k} dias`;
     h += `<div class="card lider" id="lider"><div class="row"><span class="grow muted small">Melhor compra agora</span>${tagMomento(d)}</div>
       <a href="#/produto/${encodeURIComponent(lider.produto.produto_id)}" style="color:inherit;text-decoration:none">
         <b>${esc(nomeProd(lider.produto))}</b>
-        <div class="mt"><span class="valor">${fmtR(lider.melhor.porKg)}</span> <span class="muted small">/kg de proteína · ${fmtR(lider.melhor.ce.custo)} na ${esc(lider.melhor.loja.nome || '?')}</span></div></a>
-      <p class="small" style="margin:8px 0 0">${segundo ? `${vantagem > 0 ? `${vantagem} % mais barato` : 'Empatado'} por kg de proteína que o 2º, ${esc(nomeProd(segundo.produto))} (${fmtR(segundo.melhor.porKg)}). ` : ''}${fraseMomento(d)}</p>
+        <div class="mt"><span class="valor">${fmtR(lider.melhor.porKg)}</span> <span class="muted small">/kg de ${at} · ${fmtR(lider.melhor.ce.custo)} na ${esc(lider.melhor.loja.nome || '?')}</span></div></a>
+      <p class="small" style="margin:8px 0 0">${segundo ? `${vantagem > 0 ? `${vantagem} % mais barato` : 'Empatado'} por kg de ${at} que o 2º, ${esc(nomeProd(segundo.produto))} (${fmtR(segundo.melhor.porKg)}). ` : ''}${fraseMomento(d)}</p>
       ${melhorJa ? `<p class="small muted" style="margin:6px 0 0">Já houve oferta melhor: ${esc(nomeProd(melhorJa.produto))} chegou a ${fmtR(melhorJa.minimo.porKg)}/kg ${quando(melhorJa.minimo.k)}.</p>` : ''}</div>`;
   }
 
-  h += `<div class="card" id="comparativo"><b>Comparativo</b><div class="muted small">R$ por kg de proteína real, no melhor preço de cada dia · mais baixo = melhor</div>
+  h += `<div class="card" id="comparativo"><b>Comparativo</b><div class="muted small">R$ por kg de ${at} real, no melhor preço de cada dia · mais baixo = melhor</div>
     <div class="chips mt">${[[30, '30 dias'], [90, '90 dias'], [180, '180 dias']].map(([d, t]) =>
       `<button class="chip ${diasGraf === d ? 'on' : ''}" data-a="diasGraf" data-d="${d}">${t}</button>`).join('')}</div>
-    ${graficoComparativo(comp, diasGraf, decisao)}</div>`;
+    ${graficoComparativo(comp, diasGraf, decisao, at)}</div>`;
 
   h += `<h2>Ranking</h2><div class="chips">${[[1, '24 h'], [7, '7 dias'], [30, '30 dias'], [0, 'Tudo']].map(([d, t]) =>
       `<button class="chip ${jan === d ? 'on' : ''}" data-a="janela" data-d="${d}">${t}</button>`).join('')}
       <button class="chip ${f.soDisponiveis !== false ? '' : 'on'}" data-a="toggleDisp" style="margin-left:auto">${f.soDisponiveis !== false ? 'Ver esgotados' : 'Com esgotados'}</button></div>`;
 
   if (!rk.length) {
-    h += `<p class="muted">${S.cache.cotacoes.length ? 'Nenhuma cotação com esses filtros.' : 'Nenhuma cotação ainda. Toque em ＋ para monitorar o link de uma oferta.'}</p>`;
+    h += `<p class="muted">${S.cache.cotacoes.length ? `Nenhuma cotação de ${CATEGORIAS[cat].nome.toLowerCase()} com esses filtros.` : 'Nenhuma cotação ainda. Toque em ＋ para monitorar o link de uma oferta.'}</p>`;
   }
   h += rk.map((r, i) => {
     const o = r.melhor, p = r.produto, link = linkOferta(o);
@@ -738,8 +756,8 @@ function telaInicio() {
     return `<div class="card rk ${r.abaixoAlvo ? 'alvo' : ''}" data-pid="${esc(p.produto_id)}">
       <a href="#/produto/${encodeURIComponent(p.produto_id)}">
         <div class="row"><span class="pos">${i + 1}</span><span class="grow"><b>${esc(nomeProd(p))}</b><div class="muted small clamp">${esc(descProd(p))}</div></span></div>
-        <div class="row mt"><div class="grow">${o.ce ? (o.porKg != null ? `<span class="valor">${fmtR(o.porKg)}</span> <span class="muted small">/kg proteína</span>${o.verificado ? ' <span class="tag ok">laudo</span>' : ''}`
-          : `<span class="muted small">cadastre peso e proteína</span>`) : '<span class="tag warn">esgotado</span>'}</div>
+        <div class="row mt"><div class="grow">${o.ce ? (o.porKg != null ? `<span class="valor">${fmtR(o.porKg)}</span> <span class="muted small">/kg ${at}</span>${o.verificado ? ' <span class="tag ok">laudo</span>' : ''}`
+          : `<span class="muted small">cadastre peso, dose e ${at}</span>`) : '<span class="tag warn">esgotado</span>'}</div>
           <div class="right">${o.ce ? `<b class="num">${fmtR(o.ce.custo)}</b><div class="muted small num">${o.porDose != null ? fmtR(o.porDose) + '/dose' : ''}</div>` : ''}</div></div>
         <div class="muted small mt">${esc(o.loja.nome || '?')} · ${idade(o.cot.data, agora)} · ${o.cot.origem === 'manual' ? 'manual' : 'robô'}${outras ? ` · +${outras} loja${outras > 1 ? 's' : ''}` : ''}
           ${o.ce ? tagMomento(decisao[p.produto_id]) : ''}${r.abaixoAlvo ? ' <span class="tag ok">abaixo do alvo</span>' : ''}</div></a>
@@ -794,15 +812,15 @@ function graficoHist(h, alvo) {
 }
 
 /**
- * Gráfico comparativo: uma linha por produto (R$/kg de proteína real no melhor preço do dia).
+ * Gráfico comparativo: uma linha por produto (R$/kg do ativo real no melhor preço do dia).
  * Os 5 melhores de hoje ganham cor; a cor segue o produto (ordem alfabética entre eles), não a posição.
  * Os demais ficam em cinza, ao fundo. O toque mostra o dia com os valores dos destacados.
  */
-function graficoComparativo(comp, dias, decisao) {
+function graficoComparativo(comp, dias, decisao, at = 'proteína') {
   const id = 'grafc';
   S.ui.grafs[id] = [];
   const series = comp.map(sc => ({ ...sc, pontos: sc.pontos.slice(-dias) })).filter(sc => sc.pontos.some(x => x.porKg != null));
-  if (!series.length) return '<p class="muted small">Sem cotações de produtos com peso, dose e proteína cadastrados.</p>';
+  if (!series.length) return `<p class="muted small">Sem cotações de produtos com peso, dose e ${at} cadastrados.</p>`;
   const ultimo = sc => { for (let i = sc.pontos.length - 1; i >= 0; i--) if (sc.pontos[i].porKg != null) return sc.pontos[i].porKg; return Infinity; };
   const ord = series.slice().sort((a, b) => (a.atual ?? Infinity) - (b.atual ?? Infinity) || ultimo(a) - ultimo(b));
   const dest = ord.slice(0, 5), outros = ord.slice(5);
@@ -856,7 +874,7 @@ function graficoComparativo(comp, dias, decisao) {
   const leg = dest.map(sc => `<a class="legc" href="#/produto/${encodeURIComponent(sc.produto.produto_id)}"><i style="background:${cor.get(sc.produto.produto_id)}"></i>
       <span class="grow clamp">${esc(nomeProd(sc.produto))}</span><span class="num">${sc.atual != null ? fmtR(sc.atual) : '<span class="muted">sem preço hoje</span>'}</span>${tagMomento(decisao[sc.produto.produto_id])}</a>`).join('')
     + (outros.length ? `<div class="legc muted"><i style="background:#4b5263"></i>Outros ${outros.length} produto${outros.length > 1 ? 's' : ''} (em cinza)</div>` : '');
-  return `<div class="graf"><svg id="${id}" data-graf viewBox="0 0 ${W} ${H}" role="img" aria-label="R$ por kg de proteína por dia, por produto">${svg}</svg><div id="${id}-tip" class="tip ml"></div></div>
+  return `<div class="graf"><svg id="${id}" data-graf viewBox="0 0 ${W} ${H}" role="img" aria-label="R$ por kg de ${at} por dia, por produto">${svg}</svg><div id="${id}-tip" class="tip ml"></div></div>
     <div class="mt">${leg}</div>`;
 }
 
@@ -868,30 +886,30 @@ function telaProduto(id) {
   const srv = S.cache.minimos[id];
   const menor = srv && (!hs.menor || srv.custo < hs.menor.custo) ? srv : hs.menor;
   const atual = hs.atual, alvo = num(p.preco_alvo);
-  const mAtual = metricas(p, atual && atual.custo);
+  const mAtual = metricas(p, atual && atual.custo), at = ativoDe(p);
   const dec = decisaoCompra(melhorPorDia(S.cache, id, 90, agora));
   let h = topoVoltar(nomeProd(p), `<button data-a="ir" data-h="#/editar-produto/${encodeURIComponent(id)}" aria-label="Editar produto">✎</button>`);
   h += `<div class="muted small">${esc(descProd(p))}</div>`;
   h += `<div class="stats mt">
     <div class="stat"><span class="muted small">Melhor agora</span><b>${atual ? fmtR(atual.custo) : '—'}</b>
       <span class="muted small">${atual ? `${esc(nomeLoja(atual.loja_id))} · ${idade(atual.cot.data, agora)}` : `nada nos últimos ${jan} d`}</span></div>
-    <div class="stat"><span class="muted small">Por kg de proteína</span><b>${fmtR(mAtual.porKg)}</b>
-      <span class="muted small">${mAtual.pct != null ? (mAtual.verificado ? 'proteína do laudo' : 'proteína do rótulo') : ''}${mAtual.porDose != null ? ' · ' + fmtR(mAtual.porDose) + '/dose' : ''}</span></div>
+    <div class="stat"><span class="muted small">Por kg de ${at}</span><b>${fmtR(mAtual.porKg)}</b>
+      <span class="muted small">${mAtual.pct != null ? (mAtual.verificado ? 'teor do laudo' : 'teor do rótulo') : ''}${mAtual.porDose != null ? ' · ' + fmtR(mAtual.porDose) + '/dose' : ''}</span></div>
     <div class="stat"><span class="muted small">Menor já visto</span><b>${menor ? fmtR(menor.custo) : '—'}</b>
       <span class="muted small">${menor ? `${fmtData(menor.data)} · ${esc(nomeLoja(menor.loja_id))}` : ''}</span></div>
     <div class="stat"><span class="muted small">Bom preço até</span><b>${fmtR(dec.bom)}</b>
       <span class="muted small">${dec.dias ? `mediana ${fmtR(dec.mediana)} em ${dec.dias} d` : ''}</span></div></div>`;
-  const pos = montarRanking(S.cache, { janela_dias: jan }, agora).filter(r => r.melhor.ce && r.melhor.porKg != null);
+  const pos = montarRanking(S.cache, { janela_dias: jan, categoria: catDe(p) }, agora).filter(r => r.melhor.ce && r.melhor.porKg != null);
   const iPos = pos.findIndex(r => r.produto.produto_id === id);
   h += `<div class="card" id="momento"><div class="row"><b class="grow">Comprar agora?</b>${tagMomento(dec)}</div>
     <p class="small" style="margin:8px 0">${fraseMomento(dec)}</p>
-    ${iPos >= 0 ? `<p class="small muted" style="margin:8px 0 0">${iPos === 0 ? 'É o melhor custo por kg de proteína entre os seus produtos hoje.'
-      : `É o ${iPos + 1}º em custo por kg de proteína hoje; o 1º é ${esc(nomeProd(pos[0].produto))} (${fmtR(pos[0].melhor.porKg)}/kg).`}</p>` : ''}</div>`;
+    ${iPos >= 0 ? `<p class="small muted" style="margin:8px 0 0">${iPos === 0 ? `É o melhor custo por kg de ${at} entre os seus produtos de ${CATEGORIAS[catDe(p)].nome.toLowerCase()} hoje.`
+      : `É o ${iPos + 1}º em custo por kg de ${at} hoje; o 1º é ${esc(nomeProd(pos[0].produto))} (${fmtR(pos[0].melhor.porKg)}/kg).`}</p>` : ''}</div>`;
   if (p.laudo_fonte || num(p.proteina_laudo_g) != null) {
     const fonte = p.laudo_fonte ? (/^https?:\/\//i.test(p.laudo_fonte) ? `<a href="${esc(p.laudo_fonte)}" target="_blank" rel="noopener">fonte ↗</a>` : esc(p.laudo_fonte)) : '';
-    h += `<div class="card small"><b>Laudo:</b> ${num(p.proteina_laudo_g) != null ? `${fmtN(num(p.proteina_laudo_g))} g de proteína por dose (rótulo: ${fmtN(num(p.proteina_dose_g))} g)` : 'sem valor medido'}${fonte ? ' · ' + fonte : ''}</div>`;
+    h += `<div class="card small"><b>Laudo:</b> ${num(p.proteina_laudo_g) != null ? `${fmtN(num(p.proteina_laudo_g))} g de ${at} por dose (rótulo: ${fmtN(num(p.proteina_dose_g))} g)` : 'sem valor medido'}${fonte ? ' · ' + fonte : ''}</div>`;
   }
-  if (alvo > 0) h += `<div class="card row"><span class="grow">Preço-alvo <b>${fmtR(alvo)}</b> <span class="muted small">(${fmtR(metricas(p, alvo).porKg)}/kg proteína)</span></span>
+  if (alvo > 0) h += `<div class="card row"><span class="grow">Preço-alvo <b>${fmtR(alvo)}</b> <span class="muted small">(${fmtR(metricas(p, alvo).porKg)}/kg ${at})</span></span>
     ${atual && atual.custo <= alvo ? '<span class="tag ok">abaixo do alvo</span>' : ''}</div>`;
   h += `<div class="card"><b>Custo efetivo por dia</b>${graficoHist(hs, alvo)}</div>`;
 
@@ -926,26 +944,29 @@ function telaProdutos() {
     .sort((a, b) => String(a.marca).localeCompare(String(b.marca), 'pt-BR') || String(a.nome).localeCompare(String(b.nome), 'pt-BR'));
   let h = topo('Produtos');
   h += `<input id="busca" placeholder="Buscar produto" autocomplete="off">`;
-  // Agrupado por marca, fechado por padrão; o cabeçalho mostra o melhor R$/kg de proteína da marca
+  // Por categoria e, dentro dela, por marca (fechada por padrão); o cabeçalho mostra o melhor R$/kg da marca
   const agora = Date.now();
   const porKg = {};
   for (const r of montarRanking(S.cache, { janela_dias: janela() }, agora)) if (r.melhor.ce) porKg[r.produto.produto_id] = r.melhor.porKg;
   const grupos = new Map();
-  lista.forEach(p => { const k = p.marca || 'Sem marca'; if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(p); });
-  for (const [marca, prods] of grupos) {
-    const aberta = S.ui.marcasAbertas.has(marca);
+  lista.forEach(p => { const k = catDe(p) + '|' + (p.marca || 'Sem marca'); if (!grupos.has(k)) grupos.set(k, []); grupos.get(k).push(p); });
+  let catAtual = null;
+  for (const [chave, prods] of [...grupos].sort((a, b) => Object.keys(CATEGORIAS).indexOf(a[0].split('|')[0]) - Object.keys(CATEGORIAS).indexOf(b[0].split('|')[0]))) {
+    const [cat, marca] = [chave.slice(0, chave.indexOf('|')), chave.slice(chave.indexOf('|') + 1)];
+    if (cat !== catAtual) { catAtual = cat; h += `<h2 data-cat="${cat}">${CATEGORIAS[cat].nome}</h2>`; }
+    const aberta = S.ui.marcasAbertas.has(chave);
     const melhores = prods.map(p => porKg[p.produto_id]).filter(v => v != null);
-    const avisos = prods.filter(p => { const pct = metricas(p, null).pct; return pct == null || pctSuspeita(pct); }).length;
-    h += `<div class="card grupo" data-grupo="${esc(marca)}">
-      <button class="li" data-a="toggleMarca" data-m="${esc(marca)}" aria-expanded="${aberta}"><span class="seta" aria-hidden="true"></span>
-        <span class="grow"><b>${esc(marca)}</b><div class="muted small">${prods.length} produto${prods.length > 1 ? 's' : ''}${melhores.length ? ` · melhor ${fmtR(Math.min(...melhores))}/kg proteína` : ''}</div></span>
+    const avisos = prods.filter(p => { const pct = metricas(p, null).pct; return pct == null || pctSuspeita(pct, cat); }).length;
+    h += `<div class="card grupo" data-grupo="${esc(chave)}" data-marca="${esc(marca)}">
+      <button class="li" data-a="toggleMarca" data-m="${esc(chave)}" aria-expanded="${aberta}"><span class="seta" aria-hidden="true"></span>
+        <span class="grow"><b>${esc(marca)}</b><div class="muted small">${prods.length} produto${prods.length > 1 ? 's' : ''}${melhores.length ? ` · melhor ${fmtR(Math.min(...melhores))}/kg ${CATEGORIAS[cat].ativo}` : ''}</div></span>
         ${avisos ? '<span class="tag warn">confira</span>' : ''}</button>
       <div class="grupo-corpo" ${aberta ? '' : 'hidden'}>${prods.map(p => {
         const pct = metricas(p, null).pct;
         return `<a class="li" href="#/produto/${encodeURIComponent(p.produto_id)}" data-busca="${esc(nomeProd(p).toLowerCase() + ' ' + (p.sabor || '').toLowerCase())}">
           <span class="grow"><b>${esc(p.nome)}</b><div class="muted small">${esc(descProd(p))}</div></span>
           ${porKg[p.produto_id] != null ? `<span class="num small">${fmtR(porKg[p.produto_id])}/kg</span>` : ''}
-          ${pctSuspeita(pct) || pct == null ? '<span class="tag warn">confira</span>' : ''}${bool(p.ativo, true) ? '' : '<span class="tag">arquivado</span>'}</a>`;
+          ${pctSuspeita(pct, cat) || pct == null ? '<span class="tag warn">confira</span>' : ''}${bool(p.ativo, true) ? '' : '<span class="tag">arquivado</span>'}</a>`;
       }).join('')}</div></div>`;
   }
   if (!lista.length) h += '<p class="muted">Catálogo vazio.</p>';
@@ -954,29 +975,35 @@ function telaProdutos() {
   return h + nav('produtos');
 }
 
+const opcoesTipo = (cat, sel) => Object.entries(CATEGORIAS[cat].tipos).map(([k, v]) => `<option value="${k}" ${sel === k ? 'selected' : ''}>${v}</option>`).join('');
+const Cap = s => s[0].toUpperCase() + s.slice(1);
 function camposProduto(p, pre = 'p') {
   const marcas = [...new Set(S.cache.produtos.map(x => x.marca).filter(Boolean))].sort();
-  const pct = metricas(p, null).pct;
-  return `<label class="f">Marca</label><input id="${pre}-marca" list="marcas" value="${esc(p.marca)}" placeholder="Growth">
+  const pct = metricas(p, null).pct, cat = catDe(p), c = CATEGORIAS[cat];
+  return `<label class="f">Categoria</label><select id="${pre}-cat" data-cat="${pre}">${Object.entries(CATEGORIAS).map(([k, v]) => `<option value="${k}" ${k === cat ? 'selected' : ''}>${v.nome}</option>`).join('')}</select>
+    <label class="f">Marca</label><input id="${pre}-marca" list="marcas" value="${esc(p.marca)}" placeholder="Growth">
     <datalist id="marcas">${marcas.map(m => `<option value="${esc(m)}">`).join('')}</datalist>
-    <label class="f">Nome</label><input id="${pre}-nome" value="${esc(p.nome)}" placeholder="100% Whey Concentrado">
-    <div class="grid2"><label>Tipo<select id="${pre}-tipo">${Object.entries(TIPOS).map(([k, v]) => `<option value="${k}" ${p.tipo === k ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-      <label>Sabor<input id="${pre}-sabor" value="${esc(p.sabor)}" placeholder="Chocolate"></label></div>
-    <div class="grid3 mt"><label>Peso total (g)<input id="${pre}-peso" data-pct="${pre}" inputmode="numeric" value="${esc(p.peso_g)}" placeholder="900"></label>
-      <label>Dose (g)<input id="${pre}-dose" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.dose_g)))}" placeholder="30"></label>
-      <label>Proteína/dose (g)<input id="${pre}-prot" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.proteina_dose_g)))}" placeholder="24"></label></div>
-    <div class="grid2 mt"><label>Proteína/dose no laudo (g)<input id="${pre}-laudo" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.proteina_laudo_g)))}" placeholder="opcional"></label>
+    <label class="f">Nome</label><input id="${pre}-nome" value="${esc(p.nome)}" placeholder="${cat === 'creatina' ? 'Creatina Monohidratada 300 g' : '100% Whey Concentrado'}">
+    <div class="grid2"><label>Tipo<select id="${pre}-tipo">${opcoesTipo(cat, p.tipo)}</select></label>
+      <label>Sabor<input id="${pre}-sabor" value="${esc(p.sabor)}" placeholder="${cat === 'creatina' ? 'Sem sabor' : 'Chocolate'}"></label></div>
+    <div class="grid3 mt"><label>Peso total (g)<input id="${pre}-peso" data-pct="${pre}" inputmode="numeric" value="${esc(p.peso_g)}" placeholder="${cat === 'creatina' ? 300 : 900}"></label>
+      <label>Dose (g)<input id="${pre}-dose" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.dose_g)))}" placeholder="${c.dose}"></label>
+      <label><span id="${pre}-l-prot">${Cap(c.ativo)}/dose (g)</span><input id="${pre}-prot" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.proteina_dose_g)))}" placeholder="${c.porDose}"></label></div>
+    <div class="grid2 mt"><label><span id="${pre}-l-laudo">${Cap(c.ativo)}/dose no laudo (g)</span><input id="${pre}-laudo" data-pct="${pre}" inputmode="decimal" value="${esc(fmtN(num(p.proteina_laudo_g)))}" placeholder="opcional"></label>
       <label>Fonte do laudo<input id="${pre}-laudo-fonte" value="${esc(p.laudo_fonte)}" placeholder="link ou nome do laboratório"></label></div>
-    <div class="small mt" id="${pre}-pct">${pctTxt(pct)}</div>
-    <p class="muted small">Se um laudo de laboratório mediu menos proteína que o rótulo, informe o valor medido: o ranking passa a usá-lo no R$/kg de proteína.</p>
+    <div class="small mt" id="${pre}-pct">${pctTxt(pct, cat)}</div>
+    <p class="muted small">Se um laudo de laboratório mediu menos que o rótulo, informe o valor medido: o ranking passa a usá-lo no R$/kg.</p>
     <label class="f">Preço-alvo (R$ de custo efetivo, opcional)</label><input id="${pre}-alvo" inputmode="decimal" value="${esc(fmtN(num(p.preco_alvo)))}">
-    <p class="muted small">Kit (ex.: 2 × 900 g): informe o peso total. Confira dose e proteína na tabela nutricional do rótulo.</p>`;
+    <p class="muted small">Kit (ex.: 2 × 900 g): informe o peso total. Confira dose e quantidade por dose na tabela nutricional do rótulo.</p>`;
 }
-const pctTxt = pct => pct == null ? '<span class="muted">% de proteína: informe dose e proteína</span>'
-  : `% de proteína real: <b>${fmtPct(pct)}</b>${pctSuspeita(pct) ? ' <span class="aviso">— fora de 50–95 %, confira os valores</span>' : ''}`;
+const pctTxt = (pct, cat = 'whey') => {
+  const at = CATEGORIAS[cat].ativo, [a, b] = CATEGORIAS[cat].faixa;
+  return pct == null ? `<span class="muted">% de ${at}: informe dose e ${at} por dose</span>`
+    : `% de ${at} real: <b>${fmtPct(pct)}</b>${pctSuspeita(pct, cat) ? ` <span class="aviso">— fora de ${Math.round(a * 100)}–${Math.round(b * 100)} %, confira os valores</span>` : ''}`;
+};
 function lerProduto(pre, base) {
   return Object.assign({}, base, {
-    marca: val(`#${pre}-marca`), nome: val(`#${pre}-nome`), tipo: val(`#${pre}-tipo`), sabor: val(`#${pre}-sabor`),
+    categoria: val(`#${pre}-cat`) || 'whey', marca: val(`#${pre}-marca`), nome: val(`#${pre}-nome`), tipo: val(`#${pre}-tipo`), sabor: val(`#${pre}-sabor`),
     peso_g: num(val(`#${pre}-peso`)) ?? '', dose_g: num(val(`#${pre}-dose`)) ?? '', proteina_dose_g: num(val(`#${pre}-prot`)) ?? '',
     preco_alvo: num(val(`#${pre}-alvo`)) ?? '', proteina_laudo_g: num(val(`#${pre}-laudo`)) ?? '', laudo_fonte: val(`#${pre}-laudo-fonte`),
   });
@@ -984,7 +1011,9 @@ function lerProduto(pre, base) {
 
 function telaProdutoEditor(id) {
   const novo = id === 'novo';
-  const p = novo ? { produto_id: '', marca: '', nome: '', tipo: 'concentrado', sabor: '', peso_g: '', dose_g: '', proteina_dose_g: '', preco_alvo: '', ativo: true, obs: '' } : prodPorId(id);
+  const catNova = CATEGORIAS[S.filtros.categoria] ? S.filtros.categoria : 'whey';
+  const p = novo ? { produto_id: '', categoria: catNova, marca: '', nome: '', tipo: Object.keys(CATEGORIAS[catNova].tipos)[0], sabor: '', peso_g: '', dose_g: '', proteina_dose_g: '',
+    preco_alvo: '', ativo: true, obs: '' } : prodPorId(id);
   if (!p) return topoVoltar('Produto') + '<p class="muted">Produto não encontrado.</p>' + nav('produtos');
   let h = topoVoltar(novo ? 'Novo produto' : 'Editar produto');
   h += `<div class="card">${camposProduto(p)}
@@ -1076,8 +1105,10 @@ function telaNovoMonitor() {
       <option value="">＋ Novo produto${pv ? ' a partir da oferta' : ''}</option>${prods.map(p => `<option value="${esc(p.produto_id)}" ${p.produto_id === selProd ? 'selected' : ''}>${esc(nomeProd(p))}${p.sabor ? ' · ' + esc(p.sabor) : ''}</option>`).join('')}</select>`;
   if (!selProd) {
     const sk = pv && (pv.skus.find(s => String(s.sku) === String(nm.sku)) || pv.skus[0]);
-    h += camposProduto({ marca: pv ? pv.marca : '', nome: pv ? pv.nome : '', tipo: pv && /isolad/i.test(pv.nome) ? 'isolado' : pv && /hidrolis/i.test(pv.nome) ? 'hidrolisado' : 'concentrado',
-      sabor: sk ? sk.nome : '', peso_g: pv && pv.peso_g ? pv.peso_g : '' }, 'np');
+    const ehCreatina = pv && /creat/i.test(pv.nome);
+    h += camposProduto({ categoria: ehCreatina ? 'creatina' : 'whey', marca: pv ? pv.marca : '', nome: pv ? pv.nome : '',
+      tipo: ehCreatina ? (/creapure/i.test(pv.nome) ? 'creapure' : 'monohidratada') : pv && /isolad/i.test(pv.nome) ? 'isolado' : pv && /hidrolis/i.test(pv.nome) ? 'hidrolisado' : 'concentrado',
+      sabor: sk ? sk.nome : '', peso_g: pv && pv.peso_g ? pv.peso_g : '', dose_g: ehCreatina ? 3 : '', proteina_dose_g: ehCreatina ? 3 : '' }, 'np');
   }
   h += `</div><div class="card"><b>Loja</b><select id="m-loja" class="mt">
       <option value="">＋ Nova loja${hostDe(nm.url) ? ': ' + esc(hostDe(nm.url)) : ''}</option>${lojasOrd().map(l => `<option value="${esc(l.loja_id)}" ${lojaHost && lojaHost.loja_id === l.loja_id ? 'selected' : ''}>${esc(l.nome)}</option>`).join('')}</select>
@@ -1199,7 +1230,7 @@ function garantirLoja(id, nome, url) {
 }
 function validarProduto(p) {
   if (!p.nome) { toast('Informe o nome do produto'); return false; }
-  if (p.peso_g === '' || p.dose_g === '' || p.proteina_dose_g === '') toast('Sem peso, dose e proteína o produto não entra no R$/kg de proteína');
+  if (p.peso_g === '' || p.dose_g === '' || p.proteina_dose_g === '') toast(`Sem peso, dose e ${ativoDe(p)} por dose o produto não entra no R$/kg`);
   return true;
 }
 
@@ -1213,6 +1244,7 @@ const acoes = {
   janela: el => { S.filtros.janela_dias = Number(el.dataset.d); salvar.filtros(); render(); },
   toggleDisp: () => { S.filtros.soDisponiveis = S.filtros.soDisponiveis === false; salvar.filtros(); render(); },
   toggleArq: () => { S.ui.verArquivados = !S.ui.verArquivados; render(); },
+  categoria: el => { S.filtros.categoria = el.dataset.c; S.filtros.tipo = ''; S.filtros.marca = ''; salvar.filtros(); render(); },
   diasGraf: el => { S.filtros.dias_graf = Number(el.dataset.d); salvar.filtros(); render(); },
   // Abre/fecha a marca sem redesenhar a tela (mantém a busca digitada)
   toggleMarca: el => {
@@ -1393,7 +1425,7 @@ document.addEventListener('input', ev => {
   const t = ev.target;
   if (t.id === 'busca') {
     const q = t.value.trim().toLowerCase();
-    document.querySelectorAll('[data-busca]').forEach(x => { x.style.display = !q || x.dataset.busca.includes(q) || x.closest('[data-grupo]').dataset.grupo.toLowerCase().includes(q) ? '' : 'none'; });
+    document.querySelectorAll('[data-busca]').forEach(x => { x.style.display = !q || x.dataset.busca.includes(q) || x.closest('[data-grupo]').dataset.marca.toLowerCase().includes(q) ? '' : 'none'; });
     // Buscando, abre as marcas com resultado e esconde as outras; sem busca, volta ao aberto/fechado escolhido
     document.querySelectorAll('[data-grupo]').forEach(g => {
       const algum = [...g.querySelectorAll('[data-busca]')].some(x => x.style.display !== 'none');
@@ -1405,7 +1437,7 @@ document.addEventListener('input', ev => {
   } else if (t.dataset.pct) {
     const pre = t.dataset.pct;
     $(`#${pre}-pct`).innerHTML = pctTxt(metricas({ peso_g: val(`#${pre}-peso`), dose_g: val(`#${pre}-dose`), proteina_dose_g: val(`#${pre}-prot`),
-      proteina_laudo_g: val(`#${pre}-laudo`) }, null).pct);
+      proteina_laudo_g: val(`#${pre}-laudo`) }, null).pct, val(`#${pre}-cat`) || 'whey');
   } else if (t.id === 'm-url' && S.ui.nm) {
     S.ui.nm.url = t.value.trim();
   }
@@ -1419,6 +1451,15 @@ document.addEventListener('change', ev => {
     S.ui.nm.sku = t.value; render();
   } else if (t.id === 'm-prod' && S.ui.nm) {
     S.ui.nm.produto_id = t.value; render();
+  } else if (t.dataset.cat) {
+    // Trocar a categoria no editor: tipos e rótulos da categoria nova
+    const pre = t.dataset.cat, c = CATEGORIAS[t.value];
+    $(`#${pre}-tipo`).innerHTML = opcoesTipo(t.value, '');
+    $(`#${pre}-l-prot`).textContent = Cap(c.ativo) + '/dose (g)';
+    $(`#${pre}-l-laudo`).textContent = Cap(c.ativo) + '/dose no laudo (g)';
+    $(`#${pre}-dose`).placeholder = c.dose; $(`#${pre}-prot`).placeholder = c.porDose;
+    $(`#${pre}-pct`).innerHTML = pctTxt(metricas({ peso_g: val(`#${pre}-peso`), dose_g: val(`#${pre}-dose`), proteina_dose_g: val(`#${pre}-prot`),
+      proteina_laudo_g: val(`#${pre}-laudo`) }, null).pct, t.value);
   } else if (t.id === 'c-loja') {
     $('#c-loja-nome').style.display = t.value ? 'none' : '';
   }
@@ -1497,6 +1538,9 @@ function rodarTestes() {
   t('métricas: 80 %, R$/kg proteína e R$/dose', perto(m.pct, 0.8) && perto(m.porKg, 277.78) && perto(m.porDose, 6.67), m);
   m = metricas({ peso_g: 900, dose_g: '', proteina_dose_g: 24 }, 200); t('sem dose → sem métricas', m.porKg === null && m.porDose === null && m.pct === null, m);
   t('% suspeita fora de 50–95 %', pctSuspeita(0.97) && pctSuspeita(0.3) && !pctSuspeita(0.8));
+  t('creatina: 100 % é normal, 40 % é suspeito', !pctSuspeita(1, 'creatina') && pctSuspeita(0.4, 'creatina') && pctSuspeita(1.1, 'creatina'));
+  t('categoria pela coluna ou pelo tipo; sem nada é whey', catDe({ categoria: 'creatina' }) === 'creatina' && catDe({ tipo: 'creapure' }) === 'creatina' &&
+    catDe({ tipo: 'isolado' }) === 'whey' && catDe({}) === 'whey' && ativoDe({ tipo: 'monohidratada' }) === 'creatina');
   t('mediana par e ímpar', mediana([3, 1, 2]) === 2 && mediana([4, 1, 3, 2]) === 2.5 && mediana([]) === null);
   t('avaliação do preço', avaliarPreco(90, 100) === 'abaixo' && avaliarPreco(104, 100) === 'perto' && avaliarPreco(106, 100) === 'acima' && avaliarPreco(null, 1) === null);
   t('idade', idade(d(0), agora) === 'hoje' && idade(d(1), agora) === 'ontem' && idade(d(5), agora) === 'há 5 d');
@@ -1557,6 +1601,12 @@ function rodarTestes() {
   t('sem laudo: proteína do rótulo, não verificada', metricas({ peso_g: 900, dose_g: 30, proteina_dose_g: 24 }, 200).verificado === false);
   t('isolado 10 % mais caro vence o concentrado quando entrega mais proteína',
     metricas({ peso_g: 900, dose_g: 30, proteina_dose_g: 27 }, 165).porKg < metricas({ peso_g: 900, dose_g: 30, proteina_dose_g: 21 }, 150).porKg);
+  const comCrea = { ...dados, produtos: dados.produtos.concat([{ produto_id: 'cre', categoria: 'creatina', marca: 'X', nome: 'Crea', tipo: 'monohidratada', peso_g: 300, dose_g: 3, proteina_dose_g: 3 }]),
+    cotacoes: dados.cotacoes.concat([{ produto_id: 'cre', loja_id: 'A', data: d(0), preco: 50 }]) };
+  rk = montarRanking(comCrea, { janela_dias: 7, categoria: 'creatina' }, agora);
+  t('creatina tem ranking próprio: R$/kg de creatina (50 − 10 % PIX em 300 g = 150)', rk.length === 1 && rk[0].produto.produto_id === 'cre' && perto(rk[0].melhor.porKg, 150), rk.map(r => r.melhor.porKg));
+  t('ranking de whey não mistura creatina', !montarRanking(comCrea, { janela_dias: 7, categoria: 'whey' }, agora).some(r => r.produto.produto_id === 'cre') &&
+    montarRanking(comCrea, { janela_dias: 7, categoria: 'creatina', semLactose: true }, agora).length === 1);
   t('evitar lactose deixa só isolado e hidrolisado', montarRanking(dados, { janela_dias: 0, semLactose: true }, agora).map(r => r.produto.produto_id).join() === 'iso');
 
   // melhor preço por dia: A tem PIX 10 %, B frete 20 abaixo de 300
@@ -1586,6 +1636,7 @@ function rodarTestes() {
   dc = decisaoCompra(ser(Array(12).fill(300).concat([280, 280, 280])));
   t('queda que dura alguns dias continua bom momento', dc.estado === 'comprar', dc);
   dc = decisaoCompra(ser([300, null, 310, null]));
+  t('1 dia de coleta: frase sem comparação vazia', /Ainda sem histórico para comparar \(1 dia de coleta\)/.test(fraseMomento(decisaoCompra(ser([300])))));
   t('sem preço hoje e histórico curto', dc.estado === 'sem-preco' && dc.historicoCurto && dc.dias === 2, dc);
 
   t('iso() tem fuso',/^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d$/.test(iso(Date.now())), iso(Date.now()));

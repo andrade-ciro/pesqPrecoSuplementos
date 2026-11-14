@@ -196,7 +196,7 @@ const fx = n => fs.readFileSync(path.join(__dirname, 'fixtures', n), 'utf8');
   const get = p => JSON.parse(gs.doGet({ parameter: p }).getContent());
   const post = corpo => JSON.parse(gs.doPost({ postData: { contents: typeof corpo === 'string' ? corpo : JSON.stringify(corpo) } }).getContent());
   t('API: token inválido é recusado', get({ token: 'x', acao: 'ping' }).erro === 'Token inválido' && post({ token: 'x', ops: [] }).ok === false);
-  t('API: ping', get({ token: tok, acao: 'ping' }).versao === '1.1.0');
+  t('API: ping', get({ token: tok, acao: 'ping' }).versao === '1.2.0');
   let e = get({ token: tok, acao: 'extrair', url: URL_VTEX + '?skuId=63' });
   t('API: extrair devolve a prévia com os sabores', e.ok && e.previa.sku === '63' && e.previa.skus.length === 3 && e.previa.adaptador === 'vtex' && e.previa.host === 'https://www.loja-a.com.br', e);
   bloqueada = true;
@@ -267,6 +267,30 @@ const fx = n => fs.readFileSync(path.join(__dirname, 'fixtures', n), 'utf8');
     depois === `${4 + 17 - 3}/${3 + 10 - 1}/${3 + nLinks - 1}`, { antes, depois });
   t('catálogo inicial: rodar de novo não duplica', conta() === depois, conta());
   t('catálogo inicial: todo link aponta para loja e produto existentes', G.linhas('Monitores').every(m => lojas.has(m.loja_id) && prods.has(m.produto_id)));
+  // O que foi editado no app não é sobrescrito ao rodar de novo
+  const tresVs = G.linhas('Produtos').find(p => p.marca === '3VS Nutrition');
+  G.gs.aplicarOps_([{ op: 'upsert', aba: 'Produtos', id: tresVs.produto_id, dados: { proteina_dose_g: 25, obs: 'conferido no rótulo' } }]);
+  G.gs.carregarCatalogoInicial();
+  const tresVs2 = G.linhas('Produtos').find(p => p.produto_id === tresVs.produto_id);
+  t('catálogo: rodar de novo não sobrescreve o que foi editado', tresVs2.proteina_dose_g === 25 && tresVs2.obs === 'conferido no rótulo' && tresVs2.categoria === 'whey', tresVs2);
+
+  // Catálogo de creatina no mesmo projeto (no Apps Script todos os arquivos dividem o escopo global)
+  vm.runInContext(fs.readFileSync(path.join(__dirname, '..', 'apps-script', 'CatalogoCreatina.gs'), 'utf8'), G.ctx, { filename: 'CatalogoCreatina.gs' });
+  const antesC = conta();
+  const r = G.gs.carregarCatalogoCreatina();
+  const depoisC = conta();
+  G.gs.carregarCatalogoCreatina();
+  const catC = vm.runInContext('CATALOGO_CREATINA', G.ctx);
+  const nLinksC = catC.reduce((a, c) => a + c.links.length, 0);
+  const creas = G.linhas('Produtos').filter(p => p.categoria === 'creatina');
+  t(`catálogo de creatina: ${catC.length} produtos e ${nLinksC} links, sem confundir tamanhos (300 g e 1 kg da mesma marca)`,
+    r.produtos === catC.length && r.links === nLinksC && creas.length === catC.length && new Set(creas.map(p => p.produto_id)).size === catC.length &&
+    creas.filter(p => p.marca === 'Max Titanium').length === 3, { antesC, depoisC, r });
+  t('catálogo de creatina: rodar de novo não duplica e o whey continua igual', conta() === depoisC &&
+    G.linhas('Produtos').filter(p => p.categoria !== 'creatina').length === Number(depois.split('/')[1]), conta());
+  const lojasC = new Set(G.linhas('Lojas').map(l => l.loja_id));
+  t('catálogo de creatina: todo link com loja, e creatina pura dá 100 %', G.linhas('Monitores').every(m => lojasC.has(m.loja_id)) &&
+    creas.every(p => p.dose_g === 3 && p.proteina_dose_g === 3));
 }
 
 let falhas = 0;

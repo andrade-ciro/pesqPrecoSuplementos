@@ -19,11 +19,11 @@
  * O robô (coletarTodos) roda pelo gatilho de tempo e grava uma cotação por monitor por dia (RP-11).
  */
 
-const VERSAO = '1.1.0';
+const VERSAO = '1.2.0';
 
 const ABAS = {
   Produtos: ['produto_id', 'marca', 'nome', 'tipo', 'sabor', 'peso_g', 'dose_g', 'proteina_dose_g', 'preco_alvo', 'ativo', 'obs',
-    'proteina_laudo_g', 'laudo_fonte'],
+    'proteina_laudo_g', 'laudo_fonte', 'categoria'],
   Lojas: ['loja_id', 'nome', 'tipo', 'url', 'plataforma', 'frete_fixo', 'frete_gratis_acima', 'desconto_pix_pct', 'cupom', 'cupom_pct', 'ativo'],
   Monitores: ['monitor_id', 'produto_id', 'loja_id', 'url', 'sku', 'sku_nome', 'adaptador', 'ativo', 'ultima_coleta', 'ultimo_preco',
     'ultimo_status', 'ultimo_erro', 'falhas_seguidas', 'alerta_enviado'],
@@ -809,6 +809,70 @@ function trocarToken() {
   const t = Utilities.getUuid().replace(/-/g, '');
   PropertiesService.getScriptProperties().setProperty('TOKEN', t);
   Logger.log('Novo TOKEN: ' + t);
+}
+
+/**
+ * Carrega um catálogo pronto (CatalogoInicial.gs, CatalogoCreatina.gs). Pode rodar de novo: não duplica nada.
+ * lojasCat: { 'www.host': [nome, plataforma] }
+ * lista: [{ categoria, marca, nome, tipo, sabor, peso_g, dose_g, proteina_dose_g, obs, links: [[host, url, sku, sku_nome, adaptador]] }]
+ * Lojas já cadastradas são reaproveitadas pelo site; produtos, pela categoria, marca, nome (sem o peso) e peso;
+ * links, pelo endereço. Num produto que já existe só preenche campos vazios, e links existentes ficam como estão:
+ * o que você editou no app não é sobrescrito.
+ */
+function carregarCatalogo_(lojasCat, lista, titulo) {
+  const semPeso = function (s) {
+    return String(s || '').toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '')
+      .replace(/\b\d+(?:[.,]\d+)?\s*(kg|g)\b/g, '').replace(/[^a-z0-9%]+/g, ' ').trim();
+  };
+  const host = function (u) { return (String(u || '').match(/^https?:\/\/(?:www\.)?([^\/?#]+)/i) || [])[1] || ''; };
+  const vazio = function (v) { return v === '' || v === null || v === undefined; };
+  const lojas = lerAba_('Lojas'), produtos = lerAba_('Produtos'), monitores = lerAba_('Monitores');
+  const ops = [];
+  const lojaPorHost = {};
+  lojas.forEach(function (l) { if (host(l.url)) lojaPorHost[host(l.url)] = l.loja_id; });
+  let novasLojas = 0;
+  Object.keys(lojasCat).forEach(function (h) {
+    if (lojaPorHost[host('https://' + h)]) return;
+    const id = 'L-' + host('https://' + h).split('.')[0];
+    lojaPorHost[host('https://' + h)] = id;
+    novasLojas++;
+    ops.push({ op: 'upsert', aba: 'Lojas', id: id, dados: { nome: lojasCat[h][0], tipo: 'online', url: 'https://' + h,
+      plataforma: lojasCat[h][1], ativo: true } });
+  });
+  const monPorUrl = {};
+  monitores.forEach(function (m) { monPorUrl[String(m.url).replace(/[?#].*$/, '')] = m.monitor_id; });
+  let novosProd = 0, novosMon = 0;
+  lista.forEach(function (c) {
+    const cat = c.categoria || 'whey';
+    const existente = produtos.filter(function (p) {
+      return (p.categoria || 'whey') === cat && semPeso(p.marca) === semPeso(c.marca) && semPeso(p.nome) === semPeso(c.nome) &&
+        (vazio(p.peso_g) || Number(p.peso_g) === Number(c.peso_g));
+    })[0];
+    const dados = { categoria: cat, marca: c.marca, nome: c.nome, tipo: c.tipo, sabor: c.sabor, peso_g: c.peso_g, dose_g: c.dose_g,
+      proteina_dose_g: c.proteina_dose_g, ativo: true, obs: c.obs };
+    let pid;
+    if (existente) {
+      pid = existente.produto_id;
+      Object.keys(dados).forEach(function (k) { if (!vazio(existente[k])) delete dados[k]; });
+    } else {
+      pid = 'P-' + semPeso(c.marca + ' ' + c.nome).replace(/ /g, '-') + (cat === 'whey' ? '' : '-' + c.peso_g);
+      novosProd++;
+    }
+    if (Object.keys(dados).length) ops.push({ op: 'upsert', aba: 'Produtos', id: pid, dados: dados });
+    c.links.forEach(function (l) {
+      if (monPorUrl[l[1]]) return;
+      const mid = 'M-' + pid.slice(2) + '-' + host(l[1]).split('.')[0];
+      monPorUrl[l[1]] = mid;
+      novosMon++;
+      ops.push({ op: 'upsert', aba: 'Monitores', id: mid, dados: { produto_id: pid, loja_id: lojaPorHost[host(l[1])], url: l[1],
+        sku: l[2], sku_nome: l[3], adaptador: l[4], ativo: true } });
+    });
+  });
+  if (ops.length) aplicarOps_(ops);
+  const msg = (titulo || 'Catálogo') + ' carregado: ' + novosProd + ' produtos novos, ' + novosMon + ' links novos, ' + novasLojas + ' lojas novas. ' +
+    'Agora rode coletarTodos (ou toque em "Coletar todos agora" no app) para buscar os preços.';
+  Logger.log(msg);
+  return { produtos: novosProd, links: novosMon, lojas: novasLojas };
 }
 
 /**
